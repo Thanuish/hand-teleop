@@ -1,0 +1,4 @@
+{
+  "//": "for the Node tests (test/): these files are ES modules, as the browser loads them",
+  "type": "module"
+}

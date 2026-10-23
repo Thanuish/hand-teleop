@@ -1,0 +1,15 @@
+# Versions tested together
+mujoco==3.14.0
+numpy>=2.0,<3
+aiohttp>=3.9,<4
+h5py>=3.10
+cryptography>=42
+imageio[ffmpeg]>=2.34
+Pillow>=10
+# QR codes for the phone pairing (TEST_TELEOP/lobby.py)
+segno>=1.6
+# writing config/screening.toml back without losing its comments (admin page, lab)
+tomlkit>=0.12
+# the QP inverse kinematics of the screening test (vrteleop/ik.py QPIK: exact joint limits, table keep-out)
+qpsolvers>=4.3
+daqp>=0.5

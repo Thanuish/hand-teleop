@@ -18,7 +18,8 @@ tasks from home and gets scored on time, steps and efficiency.
 |---|---|
 | ✋ open hand | moves the robot (it follows your hand, at half scale) |
 | ✊ fist | pause: move your hand without moving the robot, open it to carry on |
-| **SPACE** | close the gripper / open it again |
+| 🤏 pinch | close the gripper; open your hand and it drives with the gripper closed; pinch again to open it (the robot holds still while you pinch) |
+| **SPACE** | close the gripper / open it again (same as a pinch) |
 | **Q / E** | turn the gripper |
 | **W / S, A / D** | tilt it (tasks that need it) |
 | **H** | the gripper back home |

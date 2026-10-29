@@ -19,7 +19,10 @@
 //   fist        pauses: move the hand without moving the robot (like lifting a mouse), open again
 //   pinch       (thumb and index finger together) closes the gripper; open the pinch to let go
 //               (gripMode 'pinch'); with gripMode 'key' a key toggles the gripper instead
-//               (toggleGrip(): the computer's SPACE bar)
+//               (toggleGrip(): the computer's SPACE bar); with gripMode 'pinchToggle' a pinch
+//               toggles it: the first closes the gripper, the next opens it. While the fingers
+//               are pinched the robot holds still (the pinch bends the hand); it drives again once
+//               the hand is open, the gripper staying as the pinch left it
 //
 // Two camera placements (opts.camera):
 //   'front'  the camera looks at the person from in front (the computer's webcam, or a phone
@@ -50,15 +53,17 @@ export const SETTINGS = {
   // the robot shakier. hfov above is used instead
   focalFromHand: false,
   pinchOn: 0.32, pinchOff: 0.5, // thumb-index tips / palm length: closed below, open above (hysteresis: no flicker)
+  pinchFrames: 3,              // gripMode 'pinchToggle': a pinch counts once seen this many frames in a row
   // One Euro filter (adaptive: steady when the hand is still, little lag when it moves)
   pos: { minCutoff: 0.45, beta: 5, dCutoff: 1.0 },    // position [m]
-  depth: { minCutoff: 0.15, beta: 2.0, dCutoff: 1.0 },  // distance from the camera (the noisiest) [m]
+  depth: { minCutoff: 0.15, beta: 4.0, dCutoff: 1.0 },  // distance from the camera (the noisiest) [m] (beta 4: opens up sooner when the hand moves)
   rot: { minCutoff: 0.5, beta: 0.4, dCutoff: 1.0 },    // orientation (per rad/s)
   refDepth: { minCutoff: 0.15, beta: 0.5, dCutoff: 1.0 },   // the reference distance that scales left/right and up/down
   // a dead band ("backlash") after the filters: while the hand stays within this of where the
   // output is, nothing moves (a still hand holds the robot perfectly still); beyond it the output
   // follows from the band's edge (smoothly, no jump)
   deadPos: [0.003, 0.003, 0.012],   // [m] camera x (left/right), y (up/down), z (toward/away: the noisiest)
+  deadCatchUp: 0.1,            // [s] once the hand really moves, the dead band's gap closes this fast (no trailing lag)
   deadRot: 2.0,                // [deg]
   twist: { minCutoff: 0.6, beta: 0.6, dCutoff: 1.0 },   // the doorknob turn (per rad/s)
   tiltRate: 60,                // [deg/s] how fast the tilt keys tilt the gripper
@@ -143,15 +148,22 @@ export class OneEuro {
 // ------------------------------------------------------------ dead band (backlash)
 /** A vector that moves only when the input leaves a band around it (half-widths per axis: an
  *  ellipsoid), and then just enough to keep the input on the band's edge: tiny wobbles are
- *  ignored, motion is kept. */
+ *  ignored, motion is kept. catchUp [s] (with dt): once the input has left the band (a real
+ *  move) the output also closes the band's gap with this time constant, so a moving hand isn't
+ *  trailed a band's width behind and a stopped one isn't stopped short; caught up, it holds again. */
 export class Backlash {
-  constructor(widths) { this.w = widths; this.x = null; }
-  reset() { this.x = null; }
-  filter(v) {
+  constructor(widths, catchUp = 0) { this.w = widths; this.catchUp = catchUp; this.x = null; this.moving = false; }
+  reset() { this.x = null; this.moving = false; }
+  filter(v, dt = 0) {
     if (this.x === null) { this.x = v.slice(); return this.x; }
-    const d = v.map((u, i) => u - this.x[i]);
-    const n = Math.hypot(...d.map((u, i) => u / this.w[i]));     // (1 = on the band's edge)
-    if (n > 1) this.x = this.x.map((u, i) => u + d[i] * (1 - 1 / n));
+    let d = v.map((u, i) => u - this.x[i]);
+    let n = Math.hypot(...d.map((u, i) => u / this.w[i]));       // (1 = on the band's edge)
+    if (n > 1) { this.x = this.x.map((u, i) => u + d[i] * (1 - 1 / n)); this.moving = true; d = d.map(u => u / n); n = 1; }
+    if (this.moving && this.catchUp > 0 && dt > 0) {
+      const a = 1 - Math.exp(-dt / this.catchUp);
+      this.x = this.x.map((u, i) => u + d[i] * a);
+      if (n * (1 - a) < 0.25) this.moving = false;                 // (caught up: hold here)
+    }
     return this.x;
   }
 }
@@ -305,11 +317,14 @@ export class HandControl {
     this.outHist = [];
     this.G = null;                                // 'below': camera -> robot (rows forward, left, up)
     this.fwd = [];                                // ('below': the palm's forward in the image, recent frames)
-    this.gripMode = opts.gripMode || 'pinch';     // 'pinch': the pinch grips; 'key': toggleGrip() does
+    this.gripMode = opts.gripMode || 'pinch';     // 'pinch': the pinch grips; 'key': toggleGrip() does;
+                                                  // 'pinchToggle': each pinch closes / opens it
     if (this.gripMode === 'key') this.stab.threshold = Infinity;   // (no pinch: nothing for the grasp stabilization to hold)
     this.armed = false;
     this.fist = false;
-    this.pinched = false;
+    this.pinched = false;                         // the gripper closed
+    this.pinchHeld = false;                       // ('pinchToggle': the fingers pinched now)
+    this.pinchCount = 0;
     this.epoch = 1;
     this.lastRot = 'yaw';
     this.lastVY = 0;
@@ -324,7 +339,7 @@ export class HandControl {
     this.tilt = { pitch: 0, roll: 0, turn: 0 };   // the keys held: -1, 0, +1
     this.keyYaw = 0;                              // from the turn keys [rad]
     this.lastT = null;
-    this.bPos = new Backlash(SETTINGS.deadPos);
+    this.bPos = new Backlash(SETTINGS.deadPos, SETTINGS.deadCatchUp);
     this.bRot = new BacklashQuat(SETTINGS.deadRot);
     this.frames = [];
     // the full 3D pose (pose3d.js)
@@ -403,7 +418,7 @@ export class HandControl {
   stop() { this.running = false; if (shared) shared.onResult = null; }
   /** the tilt keys held now: pitch +1 forward / -1 back, roll +1 right / -1 left */
   setTilt(pitch, roll, turn = 0) { this.tilt = { pitch, roll, turn }; }
-  /** gripMode 'key': close the gripper if open, open it if closed */
+  /** gripMode 'key' (or any mode but 'pinch'): close the gripper if open, open it if closed */
   toggleGrip() { this.pinched = !this.pinched; return this.pinched; }
   arm(on) {
     if (on && !this.armed) {
@@ -480,7 +495,17 @@ export class HandControl {
       this.fist = hp.indexFolded && (this.fist ? hp.curled >= 2 : hp.curled >= 3);
       if (!this.fist && this.gripMode === 'pinch')
         this.pinched = this.pinched ? hp.pinch < SETTINGS.pinchOff : hp.pinch < SETTINGS.pinchOn;
-      state.gesture = this.fist ? 'fist' : this.pinched ? 'pinch' : 'open';
+      if (this.gripMode === 'pinchToggle') {
+        // the pinch's start (held a few frames) toggles the gripper; a fist counts as pinched, so
+        // the fingers passing near each other while it opens can't toggle it
+        if (this.fist) { this.pinchHeld = true; this.pinchCount = 0; }
+        else if (this.pinchHeld) this.pinchHeld = hp.pinch < SETTINGS.pinchOff;
+        else {
+          this.pinchCount = hp.pinch < SETTINGS.pinchOn ? this.pinchCount + 1 : 0;
+          if (this.pinchCount >= SETTINGS.pinchFrames) { this.pinchHeld = true; this.pinchCount = 0; this.pinched = !this.pinched; }
+        }
+        state.gesture = this.fist ? 'fist' : this.pinchHeld ? 'pinch' : 'open';
+      } else state.gesture = this.fist ? 'fist' : this.pinched ? 'pinch' : 'open';
       state.gripping = this.pinched;
       // learn the palm (open hand only: a fist or a pinch bends it; and only while the hand's shape
       // is calm: frames halfway through opening it, the palm still arched, distorted the model)
@@ -520,7 +545,8 @@ export class HandControl {
       const back = this.holding;                       // (back after a short loss: see SETTINGS.holdLost)
       this.lostAt = null;
       this.holding = false;
-      this.openFrames = this.fist ? 0 : (this.openFrames || 0) + 1;
+      const paused = this.fist || (this.gripMode === 'pinchToggle' && this.pinchHeld);   // (a pinch pauses like a fist)
+      this.openFrames = paused ? 0 : (this.openFrames || 0) + 1;
       const settled = this.openFrames >= SETTINGS.settleFrames;
       if (back && this.openFrames > 1) {               // (the filters start afresh where the hand is now, the
         for (const fl of [this.fPos, this.fDepth, this.fRef, this.fTwist]) fl.reset();
@@ -593,7 +619,8 @@ export class HandControl {
       this.dRobust = this.dRobust == null ? dMed : this.dRobust + Math.max(-dMax, Math.min(dMax, dMed - this.dRobust));
       const D = this.fDepth.filter([this.dRobust], t)[0];
       const Dref = this.fRef.filter([this.dRobust], t)[0];
-      const camPos = this.fPos.filter([ps[0] / ps[2] * Dref, ps[1] / ps[2] * Dref, D], t);
+      // (the distance filtered once, by its own filter: through the position filter too it lagged twice)
+      const camPos = [...this.fPos.filter([ps[0] / ps[2] * Dref, ps[1] / ps[2] * Dref], t), D];
       // a little ahead (SETTINGS.lead): the filters' delay partly made up from the hand's speed
       // (smoothed; zero at rest, where the dead band below holds it still anyway)
       if (dt > 0 && this.prevCam) {
@@ -602,7 +629,7 @@ export class HandControl {
       }
       this.prevCam = camPos;
       const ahead = this.vCam && SETTINGS.lead > 0 ? camPos.map((x, i) => x + this.vCam[i] * SETTINGS.lead) : camPos;
-      const held = this.bPos.filter(ahead);
+      const held = this.bPos.filter(ahead, dt);
       state.depth = D;
       const tw = this.fTwist.filter([twS], t)[0];
       const band = SETTINGS.deadRot * Math.PI / 180;

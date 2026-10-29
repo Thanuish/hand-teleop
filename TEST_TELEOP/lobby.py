@@ -555,10 +555,15 @@ def make_app(args) -> web.Application:
                  "finished": cand.get("finished") or (res or {}).get("finished_at"),
                  "practice_done": all(mt.get(k, {}).get("completed") for k in practice),
                  "reach_efficiency": sc.get("reach_efficiency")}
-            for p in c.scored_phases:           # a score and steps column per scored task
+            bd = sc.get("breakdown", {})
+            for p in c.scored_phases:           # a score and steps column per scored task (its parts on hover)
                 r[p.key] = sc.get(p.key)
                 r[f"{p.key}_steps"] = f"{mt[p.key]['steps_done']}/{mt[p.key]['steps_total']}" if p.key in mt else ""
-            r.update({"overall": sc.get("overall"), "pass": passed(res), "config": (res or {}).get("config_sha"),
+                r[f"{p.key}_parts"] = bd.get(p.key)
+            skills = sc.get("skills") or {}
+            for k in ("completion", "speed", "precision", "economy"):
+                r[k] = skills.get(k)
+            r.update({"overall": sc.get("overall"), "grade": sc.get("grade"), "pass": passed(res), "config": (res or {}).get("config_sha"),
                       "folder": _rel(session_dir(code, cand)),
                       "running": code in workers and workers[code].alive(), "only": cand.get("only")})
             out.append(r)
@@ -572,7 +577,7 @@ def make_app(args) -> web.Application:
 
     async def admin_csv(_):
         buf = io.StringIO()
-        r = rows()
+        r = [{k: v for k, v in row.items() if not k.endswith("_parts")} for row in rows()]   # (the parts: the page's hover)
         if r:
             wr = csv.DictWriter(buf, fieldnames=list(r[0]))
             wr.writeheader()

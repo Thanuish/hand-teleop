@@ -5,7 +5,7 @@
 //                25-40 cm above it, palm down, fingers toward the computer screen
 //   standing up  ('front') the phone stands in front of the candidate like a webcam
 import { preload, HandControl, openCamera } from '/test-static/hand/core.js';
-import { drawHand, Checklist, COLORS, LABELS } from '/test-static/hand/ui.js';
+import { drawHand, Checklist, COLORS, chipLabel, GRIP_TEXT, OPEN_TEXT } from '/test-static/hand/ui.js';
 const $ = (id) => document.getElementById(id);
 const BASE = window.TELEOP_BASE;
 
@@ -43,7 +43,8 @@ function setPlacement(m) {
   hand?.setCamera(m);                       // (switched while running: it takes its directions anew)
 }
 for (const b of $('placement').querySelectorAll('button')) b.addEventListener('click', () => setPlacement(b.dataset.m));
-const checklist = new Checklist($('checklist'), () => { hand.arm(true); $('homeBtn').classList.remove('hidden'); });
+const checklist = new Checklist($('checklist'), () => { hand.arm(true); $('homeBtn').classList.remove('hidden'); },
+                                { gripText: GRIP_TEXT, openText: OPEN_TEXT });
 function loop() {
   requestAnimationFrame(loop);
   if (!cam) return;
@@ -65,6 +66,7 @@ async function startCamera() {
       camera: placement,
       forearm: false, maxFrame: 640,          // (a phone's frames, smaller: the tracker crops the hand to 224 px anyway)
       tracker: 'auto',                        // (this thread or a background one: whichever is faster on this phone)
+      gripMode: 'pinchToggle',                // (a pinch grips, the next lets go)
       send, status: () => status,
       log: (frames) => send({ type: 'track_log', frames }),   // (the raw points, for tuning)
       onFrame: (st) => {
@@ -73,7 +75,7 @@ async function startCamera() {
         const g = st.gesture || 'none';
         const ready = g === 'open' && !st.driving;
         $('chip').style.color = !st.tracked ? COLORS.none : ready ? '#7fb4ff' : COLORS[g];
-        $('chip').querySelector('b').textContent = !st.tracked ? 'NO HAND' : ready ? 'READY' : LABELS[g];
+        $('chip').querySelector('b').textContent = chipLabel(st);
         $('stats').textContent = `${st.fps} fps · ${st.ms === undefined ? st.latency : Math.round(st.ms)} ms · ${st.delegate || ''}${st.path === 'worker' ? ' (bg)' : ''}`;
       },
     });

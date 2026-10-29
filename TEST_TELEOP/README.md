@@ -70,14 +70,24 @@ on; it can't be switched off for motion tracking. The candidate doesn't see the 
 rotation are sent. This needs an **Android phone with Google Play Services for AR** (most
 Android phones from the last few years). iPhones can't do this in a browser.
 
-**Score per task (0–100):** 60 × steps completed + 20 × time left (only if completed) + 20 ×
-grasp efficiency (grabs that lifted something ÷ grab attempts, minus a third per object dropped).
-**Overall** = mean of the three tasks. **Pass** = overall ≥ the pass mark (default 50, set on the
-admin page or in the configuration), and practice 1 completed. **Reach efficiency** (straight-line distance ÷ distance moved in practice
-1; 1.0 = perfectly direct) is the clearest single sign of whether someone gets the mapping.
-Times are in simulation time, so a slow connection doesn't cost points. The weights are in the
-configuration's `[scoring]`; the rules in `screen_game.py`. Changing them changes how results
-compare with earlier candidates (each result records which configuration it ran with).
+**Score per task (0–100)** ([grading.py](grading.py)), four parts:
+
+| Part | Weight | What it measures |
+|---|---|---|
+| Completion | 50 | steps done ÷ steps (tower: height ÷ target; ring rounds: rings hung ÷ target) |
+| Speed | 20 | full marks at or under the task's par time (`par_time_s`, a capable operator's time), down to 0 at the time limit; only once completed (rings and tower: the amount done is the pace) |
+| Precision | 20 | grabs that lifted something ÷ grab attempts, less a third per drop, a quarter per wrong bin, a third per tower fall |
+| Economy | 10 | how directly the robot moved: the task's par path (`par_path_m`) × completion ÷ the path moved |
+
+**Overall** = the tasks' scores averaged by their `weight` (tilt-and-pour and rings count 1.5×:
+all six degrees of freedom). Then a **grade** (A ≥ 85, B ≥ 70, C ≥ 55, D ≥ 40, else F) and a
+**skill profile**: the four parts over all tasks, 0–100, so you see *why* (e.g. completes
+everything but slowly). The admin page shows the grade and profile; hover a task's score for its
+parts. **Pass** = overall ≥ the pass mark (default 50, set on the admin page or in the
+configuration), and any `must_complete` phases completed. Times are in simulation time, so a slow
+connection doesn't cost points. The weights, pars and grade bands are in the configuration
+(`[scoring]` and each phase). Changing them changes how results compare with earlier candidates
+(each result records which configuration it ran with).
 
 ## Running a screening round
 

@@ -40,7 +40,7 @@ mount = "floating"             # "floating": the gripper on its own, no arm (it 
 motion_scale = 1.0             # the robot moves this many cm per cm the phone moves
 hand_smoothing_s = 0.03       # the same for a hand tracked by a camera (it is smoothed on the device already: little here, less lag)
 hand_rotation_scale = 0.5      # ... and turns this much of the hand's turn (0.5: a 40 deg turn of the hand turns the gripper 20 deg)
-hand_motion_scale = 0.5        # a camera-tracked hand: the robot moves this many cm per cm of hand (slower = more precise, calmer)
+hand_motion_scale = 0.35       # a camera-tracked hand: the robot moves this many cm per cm of hand (slower = more precise, calmer)
 smoothing_s = 0.12             # smooths the phone's motion (it sends ~30 positions a second); higher =
                                # smoother but the arm follows a little later. 0 = off
 
@@ -88,19 +88,27 @@ flat_within_deg = 30           # lay_flat: the object's thin side within this an
 upright_within_deg = 25        # set_upright: the cup's axis within this angle of vertical
 
 # ---------------------------------------------------------------------------- scoring
-# Score per scored task, 0 to 100:
-#     steps x (steps completed / steps)
-#   + time  x (time left / time limit)              (only if all steps were completed)
-#   + grasp x (grasps that lifted something / grasp attempts) x (1 - drops / drops_to_zero)
-# Overall = the mean of the scored tasks. Pass = overall >= pass_mark and every phase in
-# must_complete completed. Changing these changes how results compare with earlier candidates.
+# Score per scored task, 0 to 100 (TEST_TELEOP/grading.py), four parts weighted below:
+#   completion  steps done / steps (tower: height / target; rounds: rings hung / target)
+#   speed       1 at or under the task's par_time_s, falling to 0 at its time limit (only if
+#               completed; in rounds and tower, the amount done is the pace)
+#   precision   grasps that lifted something / grasp attempts, less drops, wrong bins, falls
+#   economy     the task's par_path_m x completion / the path the robot moved (1 at most)
+# Overall = the mean of the scored tasks, weighted by their weight; a grade A-F from it and a
+# skill profile (the four parts over all tasks, 0-100). Pass = overall >= pass_mark and every
+# phase in must_complete completed. Changing these changes how results compare with earlier
+# candidates.
 [scoring]
-steps = 60
-time = 20
-grasp = 20
-drops_to_zero = 3
+steps = 50                     # completion: how much of the task was done
+time = 20                      # speed: against the task's par_time_s (only once it is completed)
+grasp = 20                     # precision: grasps that worked, less drops / wrong bins / falls
+economy = 10                   # economy of motion: the robot's path against the task's par_path_m
+drops_to_zero = 3              # each drop takes this share (1/3) off precision
+falls_to_zero = 3              # the same for each fall of the tower
+wrong_bin_penalty = 0.25       # each object put in a wrong bin takes this much off precision
 pass_mark = 50
-must_complete = ["reach"]
+must_complete = []
+grades = { A = 85, B = 70, C = 55, D = 40 }   # the lowest overall score for each letter; below D: F
 
 [texts]                        # short messages between phases
 well_done = "Well done!"
@@ -301,7 +309,7 @@ friction = [1.0, 0.01, 0.001]  # wood on wood
 #   kind = "wire"    a buzz wire: a curve through points; the robot holds the wand that goes with it
 #   pos = [x, y];  yaw_deg turns it
 
-[markers.zone]                 # practice 2: the green square
+[markers.zone]                 # practice: the green square
 kind = "zone"
 pos = [0.58, 0.02]
 size = [0.09, 0.09]
@@ -482,6 +490,11 @@ handle_length = 0.12
 # last; the others are tasks:
 #   scored        false = practice
 #   time_limit_s  the phase ends when time is up (its steps then count as they are)
+#   par_time_s    (scored) a capable operator's time: full speed marks at or under it, none at
+#                 the limit (default: 35 % of the limit)
+#   par_path_m    (scored) the robot's path for the whole task when moved cleanly [m]: full
+#                 economy marks at or under it (without it, economy isn't graded for the task)
+#   weight        (scored) the task's share of the overall score (default 1)
 #   rotation      "yaw": the gripper turns left/right with the phone and keeps pointing down;
 #                 "full": it also tilts and twists (all six degrees of freedom)
 #   objects, markers   what is on the table in this phase
@@ -512,20 +525,8 @@ title = "Hand control"
 text = "Start the camera and follow the steps: your open hand drives the robot, a fist pauses it, a pinch grips (let go: open the fingers)."
 
 [[phases]]
-key = "reach"
-title = "Practice 1: move"
-scored = false
-time_limit_s = 180
-text = "Hold MOVE and move your phone: the gripper follows your hand. Touch the green ball with the gripper. Let go of MOVE to reposition your hand."
-steps = [
-  { type = "reach", target = [0.46, 0.12, 0.11] },
-  { type = "reach", target = [0.58, -0.14, 0.07] },
-  { type = "reach", target = [0.40, -0.16, 0.22] },
-]
-
-[[phases]]
 key = "pick"
-title = "Practice 2: pick and place"
+title = "Practice: pick and place"
 scored = false
 time_limit_s = 180
 text = "Bring the open gripper down around the yellow cube, tap GRAB, lift it, put it into the green square and tap RELEASE. Turn your phone to turn the gripper."
@@ -540,6 +541,8 @@ key = "shapes"
 title = "Task 1: shapes"
 scored = true
 time_limit_s = 300
+par_time_s = 90
+par_path_m = 3.5
 text = "Put each shape into its outline on the board. Turn the shapes to match."
 objects = ["big_square", "small_square", "bar"]
 markers = ["slot_big_square", "slot_small_square", "slot_bar"]
@@ -554,6 +557,8 @@ key = "sort"
 title = "Task 2: sort by colour"
 scored = true
 time_limit_s = 240
+par_time_s = 80
+par_path_m = 3.5
 text = "Put each object into the bin of its colour."
 objects = ["red_ball", "blue_cube", "green_cylinder"]
 markers = ["bin_red", "bin_blue", "bin_green"]
@@ -568,6 +573,9 @@ key = "tilt"
 title = "Task 3: tilt and pour"
 scored = true
 time_limit_s = 420
+par_time_s = 150
+par_path_m = 3.5
+weight = 1.5                   # tilting and pouring (all six degrees of freedom) counts more
 rotation = "full"
 text = "Now the gripper also tilts and twists with your phone. Take the book out of its holder, turn it flat and lay it on the green mat. Then pour the balls from the cup into the bowl and set the cup down upright."
 objects = ["book", "cup", "ball"]
@@ -584,6 +592,8 @@ key = "rings"
 title = "Ring on pegs"
 scored = true
 time_limit_s = 300
+par_path_m = 9.0               # (for the 9 rings of the target rounds; speed here = how many were hung)
+weight = 1.5                   # six degrees of freedom: counts more
 rotation = "full"
 repeat = true                  # all three on their pegs: a new round (the rings back in their holders) until time is up
 target_rounds = 3              # 3 rounds (9 rings) score full marks
@@ -601,6 +611,7 @@ key = "tower"
 title = "Tower"
 scored = true
 time_limit_s = 240
+par_path_m = 10.0              # (for a tower of the target height; speed here = how high it got)
 rotation = "yaw"
 text = "Take each block from the yellow square and stack them on the wooden platform. Build as high as you can: lower each block gently onto the one below, then RELEASE. A new block appears when you take one."
 objects = ["tower_block"]

@@ -33,14 +33,9 @@ All times are simulation seconds, so a slow computer doesn't penalise anyone. Ea
 recorded as an episode (data/.../episode_XXXX.hdf5). results.json in the session folder holds
 the metrics and scores; the lobby (TEST_TELEOP/lobby.py) reads it.
 
-Score per scored task, 0..100 (weights from [scoring]; by default 60 / 20 / 20):
-      steps x steps completed / steps         (buzz wire: how far along the wire)
-    + time  x time left / time limit       (only if the task was completed)
-    + grasp x grasp efficiency             (grasps that lifted something / grasp attempts,
-                                            minus 1/drops_to_zero per drop; buzz wire: 1 minus
-                                            1/touches_to_zero per touch)
-The overall score is the mean of the scored tasks. Reach steps also measure path efficiency
-(straight-line distance / distance moved), the clearest sign of understanding the mapping.
+Scores: grading.py (per task completion, speed against a par time, precision, economy of
+motion; the overall score, a grade and a skill profile). Reach steps also measure path
+efficiency (straight-line distance / distance moved).
 """
 from __future__ import annotations
 
@@ -57,6 +52,7 @@ from vrteleop import scene as S
 from vrteleop import server
 
 from . import config as C
+from . import grading as G
 from . import screen_scene as SS
 
 
@@ -111,28 +107,6 @@ def _jsonable(o):
     if isinstance(o, np.generic):
         return o.item()
     raise TypeError(f"{type(o).__name__} is not JSON serializable")
-
-
-def score_task(m: dict, limit: float, w: dict) -> float:
-    """0..100 for one scored task (see the module docstring); w = the [scoring] weights."""
-    steps = m["steps_done"] / max(1, m["steps_total"])
-    time_part = max(0.0, 1 - m["time_s"] / limit) if m["completed"] else 0.0
-    if "best_height" in m:                                 # tower: height, few falls, good grasps
-        h = min(1.0, m["best_height"] / max(1e-6, m["target_height"]))
-        eff = m["grasps"] / m["grasp_attempts"] if m["grasp_attempts"] else 0.0
-        return round(w["steps"] * h + w["time"] * max(0.0, 1 - m["falls"] / 3) * (h > 0) + w["grasp"] * min(1.0, eff), 1)
-    if "rounds" in m:                                      # rounds: how much was done over all rounds
-        done = m["items_done"] / max(1, m["target_items"])
-        eff = (m["grasps"] / m["grasp_attempts"] * max(0.0, 1 - m["drops"] / w["drops_to_zero"])
-               if m["grasp_attempts"] else 0.0)
-        return round((w["steps"] + w["time"]) * min(1.0, done) + w["grasp"] * min(1.0, eff), 1)
-    if "touches" in m:                                     # buzz wire: a clean run
-        eff = max(0.0, 1 - m["touches"] / w["touches_to_zero"]) if m["progress"] > 0 else 0.0
-    elif m["grasp_attempts"]:
-        eff = m["grasps"] / m["grasp_attempts"] * max(0.0, 1 - m["drops"] / w["drops_to_zero"])
-    else:
-        eff = 0.0
-    return round(w["steps"] * steps + w["time"] * time_part + w["grasp"] * min(1.0, eff), 1)
 
 
 class ScreenGame:
@@ -713,13 +687,18 @@ class ScreenGame:
 
     # ------------------------------------------------------------ results
     def scores(self) -> dict:
-        out = {}
+        """Each scored task's score (and its sub-scores under "breakdown"); once all are in, the
+        overall score, its grade and the skill profile (grading.py)."""
+        out, breakdown = {}, {}
         scored = [p for p in self.phases if p.scored]
         for p in scored:
             if p.key in self.metrics:
-                out[p.key] = score_task(self.metrics[p.key], p.limit, self.cfg.scoring)
-        if scored and all(p.key in out for p in scored):
-            out["overall"] = round(float(np.mean([out[p.key] for p in scored])), 1)
+                breakdown[p.key] = G.grade_task(self.metrics[p.key], p.limit, p.par_time, p.par_path, self.cfg.scoring)
+                out[p.key] = breakdown[p.key]["score"]
+        if breakdown:
+            out["breakdown"] = breakdown
+        if scored and all(p.key in breakdown for p in scored):
+            out.update(G.summarize(breakdown, {p.key: p.weight for p in scored}, self.cfg.scoring["grades"]))
         logs = [x for mt in self.metrics.values() for x in mt.get("reach_log", [])]
         if logs:
             out["reach_efficiency"] = round(float(np.mean([x["efficiency"] for x in logs])), 3)

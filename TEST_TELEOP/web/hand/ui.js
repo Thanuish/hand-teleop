@@ -5,6 +5,15 @@ import { BONES } from './core.js';
 export const COLORS = { open: '#3ee08f', fist: '#ffc24a', pinch: '#ff5f6d', none: '#9aa3b2' };
 export const LABELS = { open: 'DRIVING', fist: 'PAUSED', pinch: 'GRIPPING', none: 'NO HAND' };
 
+/** The status chip's text for a frame state: what the hand does, and whether the gripper is closed. */
+export function chipLabel(st) {
+  if (!st?.tracked) return 'NO HAND';
+  const g = st.gesture;
+  if (g === 'open' && !st.driving) return st.gripping ? 'READY · GRIP CLOSED' : 'READY';
+  if (g === 'pinch') return st.gripping ? 'GRIP CLOSED' : 'GRIP OPEN';
+  return st.gripping ? `${LABELS[g]} · GRIP CLOSED` : LABELS[g];
+}
+
 /** Draw the camera image and the hand (state from HandControl's onFrame) into a canvas. */
 export function drawHand(canvas, video, state, { mirror = true, dim = 0.25 } = {}) {
   const ctx = canvas.getContext('2d');
@@ -52,6 +61,10 @@ export function drawHand(canvas, video, state, { mirror = true, dim = 0.25 } = {
   }
   ctx.restore();
 }
+
+// the checklist's grip steps for gripMode 'pinchToggle' (pass as gripText, openText)
+export const GRIP_TEXT = 'Open it, then pinch 🤏 thumb and index finger once: the gripper <b>closes</b>';
+export const OPEN_TEXT = 'Pinch 🤏 again: it <b>opens</b>. Then open your hand ✋: now it <b>drives</b> the robot';
 
 /** The start checklist: each step ticks off when done, in order; then onDone(). Steps:
  *  camera on, hand seen, a fist (that pauses), a pinch (that grips), open the hand (go). */

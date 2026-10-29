@@ -2,7 +2,7 @@
 // simulator's status (the 'teleop-status' events of main.js), and runs the hand control (a
 // webcam watches the candidate's hand; or a phone's camera does, on its own page).
 import { preload, HandControl, openCamera } from '/test-static/hand/core.js';
-import { drawHand, Checklist, COLORS, LABELS } from '/test-static/hand/ui.js';
+import { drawHand, Checklist, COLORS, chipLabel, GRIP_TEXT, OPEN_TEXT } from '/test-static/hand/ui.js';
 const $ = (id) => document.getElementById(id);
 const code = window.TELEOP_BASE.split('/').pop();
 
@@ -257,7 +257,7 @@ tracker.then(({ delegate }) => {
 const DONE_KEY = `checklist-done:${window.TELEOP_BASE}`;
 const store = (f) => { try { return f(window.sessionStorage); } catch (e) { return null; } };
 const again = store(s => s.getItem(DONE_KEY)) === '1';
-// SPACE: close the gripper / open it again
+// SPACE: close the gripper / open it again (as a pinch does)
 window.addEventListener('keydown', (e) => {
   if (e.code !== 'Space' || e.repeat || e.target instanceof HTMLInputElement) return;
   e.preventDefault();                                     // (no page scroll, no button press)
@@ -267,9 +267,8 @@ const checklist = new Checklist($('checklist'), () => {
   hand.arm(true);                                         // (now the hand drives: the test goes on)
   $('handBox').classList.remove('hidden');
   store(s => s.setItem(DONE_KEY, '1'));
-}, { again, gripText: 'Press <b>SPACE</b>: that <b>grips</b>',
-       openText: 'Press <b>SPACE</b> again (lets go), hand open ✋: now it <b>drives</b> the robot' });
-// a pinch (thumb and index finger together) closes the gripper while it is held; the hand only
+}, { again, gripText: GRIP_TEXT, openText: OPEN_TEXT });
+// a pinch (thumb and index finger together) closes the gripper, the next opens it; the hand only
 // moves the robot: Q/E turn the gripper, W/S and A/D tilt it (in tasks with full rotation). Used
 // here (this computer's camera) and sent to the robot (a phone as the camera reads them from its
 // status); resent while held, so a lost page leaves no key stuck
@@ -309,7 +308,7 @@ window.addEventListener('keyup', (e) => { if (e.code in tiltKeys) { tiltKeys[e.c
 window.addEventListener('blur', () => { for (const k in tiltKeys) tiltKeys[k] = 0; updateTilt(); });
 function setChip(el, state) {
   const g = state?.gesture || 'none';
-  const label = !state?.tracked ? 'NO HAND' : (g === 'open' && !state.driving ? 'READY' : LABELS[g]);
+  const label = chipLabel(state);
   el.style.color = !state?.tracked ? COLORS.none : (g === 'open' && !state.driving ? '#7fb4ff' : COLORS[g]);
   el.querySelector('b').textContent = label;
 }
@@ -335,7 +334,7 @@ $('camBtn').addEventListener('click', async () => {
       camera: 'front',                     // (the webcam faces the candidate)
       send: (m) => { ghostInput(m); window.__teleop?.send?.(m); },
       status: () => lastStatus,
-      gripMode: 'key',                     // (SPACE grips and lets go: a pinch moved the hand, and the robot with it)
+      gripMode: 'pinchToggle',             // (a pinch grips, the next lets go; the robot holds still while pinched)
       log: (frames) => window.__teleop?.send?.({ type: 'track_log', frames }),   // (the raw points, for tuning)
       onFrame: (st) => {
         handState = st;

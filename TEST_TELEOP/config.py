@@ -141,6 +141,9 @@ class Phase:
     graspable: list = field(default_factory=list)   # objects whose grasps and drops are counted
     repeat: bool = False         # all steps done: a new round (everything back to its start) until time is up
     target_rounds: int = 1       # (repeat) this many rounds score full marks
+    par_time: float | None = None  # [s] a capable operator's time: full speed marks at or under it (grading.py)
+    par_path: float | None = None  # [m] the robot's path for the whole task, moved cleanly (None: economy not graded)
+    weight: float = 1.0          # this task's share of the overall score
 
 
 @dataclass
@@ -420,20 +423,30 @@ def parse(raw: dict, p: Path | str = "<config>") -> Config:
     tol["flat_cos"] = math.cos(math.radians(tol.pop("flat_within_deg")))
     tol["upright_cos"] = math.cos(math.radians(tol.pop("upright_within_deg")))
     sc = raw.get("scoring", {})
-    c.keys(sc, "scoring", ("steps", "time", "grasp", "drops_to_zero", "touches_to_zero", "pass_mark", "must_complete"))
-    scoring = dict(steps=c.num(sc, "steps", "scoring", 60, lo=0), time=c.num(sc, "time", "scoring", 20, lo=0),
-                   grasp=c.num(sc, "grasp", "scoring", 20, lo=0),
+    c.keys(sc, "scoring", ("steps", "time", "grasp", "economy", "drops_to_zero", "touches_to_zero", "falls_to_zero",
+                           "wrong_bin_penalty", "pass_mark", "must_complete", "grades"))
+    scoring = dict(steps=c.num(sc, "steps", "scoring", 50, lo=0), time=c.num(sc, "time", "scoring", 20, lo=0),
+                   grasp=c.num(sc, "grasp", "scoring", 20, lo=0), economy=c.num(sc, "economy", "scoring", 10, lo=0),
                    drops_to_zero=c.num(sc, "drops_to_zero", "scoring", 3, lo=0, lo_open=True),
                    touches_to_zero=c.num(sc, "touches_to_zero", "scoring", 10, lo=0, lo_open=True),
+                   falls_to_zero=c.num(sc, "falls_to_zero", "scoring", 3, lo=0, lo_open=True),
+                   wrong_bin_penalty=c.num(sc, "wrong_bin_penalty", "scoring", 0.25, lo=0, hi=1),
                    pass_mark=c.num(sc, "pass_mark", "scoring", 50, lo=0, hi=100),
-                   must_complete=sc.get("must_complete", ["reach"]))
+                   must_complete=sc.get("must_complete", []))
     if not (isinstance(scoring["must_complete"], list) and all(isinstance(x, str) for x in scoring["must_complete"])):
-        c.err("scoring.must_complete", "should be a list of phase keys in quotes, e.g. [\"reach\"]")
+        c.err("scoring.must_complete", "should be a list of phase keys in quotes, e.g. [\"pick\"]")
         scoring["must_complete"] = []
-    if all(isinstance(scoring[k], (int, float)) for k in ("steps", "time", "grasp")) \
-            and abs(scoring["steps"] + scoring["time"] + scoring["grasp"] - 100) > 1e-6:
-        c.err("scoring", f"steps + time + grasp should add up to 100 (a task's score is out of 100), "
-                         f"they add up to {scoring['steps'] + scoring['time'] + scoring['grasp']}")
+    gr = sc.get("grades", {})
+    c.keys(gr, "scoring.grades", ("A", "B", "C", "D"))
+    scoring["grades"] = {g: c.num(gr, g, "scoring.grades", dv, lo=0, hi=100)
+                         for g, dv in (("A", 85), ("B", 70), ("C", 55), ("D", 40))}
+    if all(isinstance(v, (int, float)) for v in scoring["grades"].values()) \
+            and not scoring["grades"]["A"] >= scoring["grades"]["B"] >= scoring["grades"]["C"] >= scoring["grades"]["D"]:
+        c.err("scoring.grades", "should go down from A to D (the lowest score for each letter)")
+    parts = ("steps", "time", "grasp", "economy")
+    if all(isinstance(scoring[k], (int, float)) for k in parts) and abs(sum(scoring[k] for k in parts) - 100) > 1e-6:
+        c.err("scoring", f"steps + time + grasp + economy should add up to 100 (a task's score is out of 100), "
+                         f"they add up to {sum(scoring[k] for k in parts)}")
     tx = raw.get("texts", {})
     text_keys = dict(well_done="Well done!", time_up="Time is up.", next="Next:", phone_connected="Phone connected")
     c.keys(tx, "texts", tuple(text_keys))
@@ -668,7 +681,8 @@ def parse(raw: dict, p: Path | str = "<config>") -> Config:
         kind = c.text(ph, "kind", w, "task", ("pair", "task", "done"))
         allowed = ("key", "kind", "title", "text")
         if kind == "task":
-            allowed += ("scored", "time_limit_s", "rotation", "objects", "markers", "steps", "repeat", "target_rounds")
+            allowed += ("scored", "time_limit_s", "rotation", "objects", "markers", "steps", "repeat", "target_rounds",
+                        "par_time_s", "par_path_m", "weight")
         c.keys(ph, w, allowed, required=("key", "title", "text") + (("time_limit_s", "steps") if kind == "task" else ()))
         key = c.text(ph, "key", w, f"phase{i}")
         if key and not key.replace("_", "").isalnum():
@@ -677,6 +691,11 @@ def parse(raw: dict, p: Path | str = "<config>") -> Config:
         if kind == "task":
             P.scored = c.flag(ph, "scored", w, False)
             P.limit = float(c.num(ph, "time_limit_s", w, 120.0, lo=5, hi=3600))
+            P.par_time = float(c.num(ph, "par_time_s", w, round(P.limit * 0.35), lo=1, hi=3600))
+            if P.par_time >= P.limit:
+                c.err(f"{w}.par_time_s", f"should be shorter than time_limit_s ({P.limit:g})")
+            P.par_path = float(c.num(ph, "par_path_m", w, 0.0, lo=0, hi=100)) or None
+            P.weight = float(c.num(ph, "weight", w, 1.0, lo=0, hi=10))
             P.rotation = c.text(ph, "rotation", w, "yaw", ("yaw", "full"))
             for o in ph.get("objects", []):
                 if o in groups:

@@ -19,6 +19,8 @@
     th { color: #9aa1ad; font-weight: 600; cursor: pointer; }
     td.num { text-align: right; font-variant-numeric: tabular-nums; }
     .pass { color: #4cd07d; font-weight: 700; } .fail { color: #ff7070; font-weight: 700; }
+    .grade.gA { color: #4cd07d; } .grade.gB { color: #9be37a; } .grade.gC { color: #ffd24a; }
+    .grade.gD { color: #ffa24a; } .grade.gF { color: #ff7070; }
     .st { padding: 2px 8px; border-radius: 10px; font-size: 12px; background: #333842; }
     .st.playing { background: #2f6fde; } .st.done { background: #2d6b45; } .st.abandoned { background: #7a4a1f; }
     #codes { font: 13px ui-monospace, Menlo, Consolas, monospace; white-space: pre; color: #cfe; }
@@ -70,7 +72,9 @@
     <thead><tr>
       <th data-k="name">Name</th><th data-k="code">Code</th><th data-k="batch">Batch</th><th data-k="status">Status</th>
       <th data-k="phase">Phase</th><th data-k="reach_efficiency">Reach eff.</th>
-      <th id="taskCols" style="display:none"></th><th data-k="overall">Overall</th><th data-k="pass">Result</th>
+      <th id="taskCols" style="display:none"></th><th data-k="overall">Overall</th><th data-k="grade">Grade</th>
+      <th data-k="completion" title="Skill profile over all tasks (0-100): completion · speed · precision · economy of motion">Skills <span class="muted">C · S · P · E</span></th>
+      <th data-k="pass">Result</th>
       <th data-k="started">Started</th><th></th>
     </tr></thead>
     <tbody id="rows"></tbody>
@@ -130,12 +134,20 @@ function render() {
     <td>${esc(r.phase || '')}</td>
     <td class="num">${num(r.reach_efficiency, 2)}</td>
     ${data.config.phases.filter(p => p.scored).map(p =>
-      `<td class="num">${num(r[p.key])} <span class="muted">${r[p.key + '_steps'] || ''}</span></td>`).join('')}
+      `<td class="num" title="${esc(partsText(r[p.key + '_parts']))}">${num(r[p.key])} <span class="muted">${r[p.key + '_steps'] || ''}</span></td>`).join('')}
     <td class="num"><b>${num(r.overall)}</b></td>
+    <td><b class="grade g${esc(r.grade || '')}">${esc(r.grade || '')}</b></td>
+    <td class="num">${r.completion == null ? '' : [r.completion, r.speed, r.precision, r.economy].map(v => num(v, 0)).join(' · ')}</td>
     <td>${r.pass === true ? '<span class="pass">PASS</span>' : r.pass === false ? '<span class="fail">FAIL</span>' : ''}</td>
     <td>${esc(r.started || '')}</td>
     <td>${r.status !== 'new' ? `<button class="secondary" onclick="retake('${r.code}')" title="Let this candidate take the test again (the old attempt is kept)">Allow retake</button>` : ''}</td>
   </tr>`).join('');
+}
+/** a task's parts (0..1) for the hover text of its score */
+function partsText(p) {
+  if (!p) return '';
+  return ['completion', 'speed', 'precision', 'economy'].filter(k => p[k] !== null && p[k] !== undefined)
+    .map(k => `${k} ${Math.round(p[k] * 100)}`).join(' · ');
 }
 function sortBy(k) {
   sortDir = sortKey === k ? -sortDir : -1;

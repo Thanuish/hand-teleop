@@ -12,6 +12,8 @@
 //   4. the focal length estimated from the hand at hfov 70
 //   5. a long session of pinches and clutches: no offset adds up, the robot never jumps
 //   6. steady (the default): the hand's turn and tilt don't turn the gripper; the keys do, the right way
+//   7. a 2-frame distance glitch doesn't make the robot lurch
+//   8. gripMode 'pinchToggle': a pinch closes the gripper, the next opens it, the open hand drives
 import { HandControl, matToQuat, SETTINGS } from '../core.js';
 import { solveHandPose, PalmModel, PALM_IDS, solveWristPosition, estimateHfov, HandShape, hfovOf, quatToMat,
          logSO3, mulMM, T, len, sub, add } from '../pose3d.js';
@@ -286,6 +288,44 @@ console.log('7. two wrong frames (the hand seen 40 % farther for 2 frames): the 
   }
   console.log(`     the robot moved at most ${mm(worst)} mm`);
   check(worst < 0.01, 'a 2-frame distance glitch moves the robot < 1 cm');
+}
+
+// ------------------------------------------------------------ 8. pinch to toggle the grip
+console.log("8. gripMode 'pinchToggle': a pinch closes the gripper, the open hand drives it closed, the next pinch opens it");
+{
+  const s = session({ mode: 'front', rotation: 'yaw', seed: 19 });
+  const FRONT = cols([0, -1, 0], [-1, 0, 0], [0, 0, -1]);
+  const W0 = [0.02, 0.0, 0.45];
+  s.hc.gripMode = 'pinchToggle';
+  for (let k = 0; k < 40; k++) s.frame(FRONT, W0);
+  s.hc.arm(true);
+  for (let k = 0; k < 30; k++) s.frame(FRONT, W0);
+  const closed = () => s.sent.at(-1).right.stick[1] > 0;
+  const pinch = () => {
+    for (let k = 1; k <= 4; k++) s.frame(FRONT, W0, { pinch: k / 4 });
+    let drove = false;
+    for (let k = 0; k < 15; k++) { s.frame(FRONT, W0, { pinch: 1 }); drove ||= !!s.sent.at(-1).right.grip; }
+    for (let k = 3; k >= 0; k--) s.frame(FRONT, W0, { pinch: k / 4 });
+    return drove;
+  };
+  check(!closed(), 'the gripper starts open');
+  const drove1 = pinch();
+  for (let k = 0; k < 30; k++) s.frame(FRONT, W0);
+  check(closed() && !drove1, 'the first pinch closes it (the robot holds still while pinched)');
+  const a = s.last();
+  let w = W0;
+  for (let k = 1; k <= 30; k++) { w = add(W0, [0, -0.05 * ramp(k, 30), 0]); s.frame(FRONT, w); }
+  for (let k = 0; k < 20; k++) s.frame(FRONT, w);
+  check(closed() && s.sent.at(-1).right.grip && s.last().pos[2] - a.pos[2] > 0.01,
+        `the hand open again: it drives (moved ${mm(s.last().pos[2] - a.pos[2])} mm up), the gripper still closed`);
+  for (let k = 0; k < 15; k++) s.frame(FRONT, w, { curl: 1 });     // a fist and open again: no toggle
+  for (let k = 0; k < 30; k++) s.frame(FRONT, w);
+  check(closed(), 'a fist (clutch) and the hand opened again: the gripper stays closed');
+  for (let k = 1; k <= 4; k++) s.frame(FRONT, w, { pinch: k / 4 });
+  for (let k = 0; k < 15; k++) s.frame(FRONT, w, { pinch: 1 });
+  for (let k = 3; k >= 0; k--) s.frame(FRONT, w, { pinch: k / 4 });
+  for (let k = 0; k < 30; k++) s.frame(FRONT, w);
+  check(!closed() && s.sent.at(-1).right.grip, 'the second pinch opens it, and the open hand drives again');
 }
 
 console.log(failed ? `\n${failed} FAILED` : '\nall passed');

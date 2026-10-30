@@ -1,8 +1,8 @@
 // Screening monitor overlay: shows the phase, instructions, timer and progress from the
 // simulator's status (the 'teleop-status' events of main.js), and runs the hand control (a
 // webcam watches the candidate's hand; or a phone's camera does, on its own page).
-import { preload, HandControl, openCamera } from '/test-static/hand/core.js';
-import { drawHand, Checklist, COLORS, chipLabel, GRIP_TEXT, OPEN_TEXT } from '/test-static/hand/ui.js';
+import { preload, HandControl, openCamera, HAND_BOX } from '/test-static/hand/core.js';
+import { drawHand, drawBox, Checklist, COLORS, chipLabel, clutchDemo, GRIP_TEXT, OPEN_TEXT } from '/test-static/hand/ui.js';
 const $ = (id) => document.getElementById(id);
 const code = window.TELEOP_BASE.split('/').pop();
 
@@ -122,27 +122,30 @@ function ghostInput(m) {
     if (!g) return;
     gst.p0 = g.pivot; gst.q0 = g.bq;
     gst.off = g.bp.clone().sub(g.pivot).applyQuaternion(g.bq.clone().invert());   // (the base from the pivot, in its own frame)
-    gst.c0p = cp.clone(); gst.c0q = cq.clone(); gst.epoch = c.epoch; gst.on = true;
+    gst.c0p = cp.clone(); gst.cqPrev = cq.clone(); gst.qg = gst.q0.clone(); gst.epoch = c.epoch; gst.on = true;
   } else if (c.epoch !== gst.epoch) {                // (re-anchored: carries on from the ghost)
-    gst.p0 = gst.pg.clone(); gst.q0 = gst.qg.clone();
-    gst.c0p = cp.clone(); gst.c0q = cq.clone(); gst.epoch = c.epoch;
+    gst.p0 = gst.pg.clone();
+    gst.c0p = cp.clone(); gst.cqPrev = cq.clone(); gst.epoch = c.epoch;
   }
   gst.pg = gst.p0.clone().add(cp.clone().sub(gst.c0p).multiplyScalar(MOVE));
-  const d = cq.clone().multiply(gst.c0q.clone().invert());          // (the world-frame turn)
+  // the turn added up message by message, as the server does (vrteleop/teleop.py: the turn since
+  // engaging taken the shortest way flipped sides past 180 deg)
+  const d = cq.clone().multiply(gst.cqPrev.clone().invert());       // (the world-frame step)
   if (d.w < 0) d.set(-d.x, -d.y, -d.z, -d.w);
   const ang = 2 * Math.acos(Math.min(1, d.w));
-  const turn = ang > 1e-6 ? new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(d.x, d.y, d.z).normalize(), ang * TURN)
-                          : new THREE.Quaternion();
-  gst.qg = turn.multiply(gst.q0);
+  if (ang > 1e-6) gst.qg = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(d.x, d.y, d.z).normalize(), ang * TURN).multiply(gst.qg);
+  gst.cqPrev = cq.clone();
 }
 function updateGhost() {
   requestAnimationFrame(updateGhost);
   if (!ghost) return;
   const show = gst.on && gst.pg && ghost.base;
   const g = show ? gripperNow() : null;
-  // hidden when not driving, and once the robot has caught up (within 5 mm and 3 deg: it would only double it)
-  const behind = g && (g.pivot.distanceTo(gst.pg) > 0.005 || 2 * Math.acos(Math.min(1, Math.abs(g.bq.dot(gst.qg)))) > 3 * Math.PI / 180);
-  const visible = !!(show && behind);
+  // hidden when not driving, and once the robot has caught up (within 5 mm and 3 deg: it would only
+  // double it); shown again past 10 mm / 6 deg (hysteresis: no flicker at the edge)
+  const k = gst.shown ? 1 : 2;
+  const behind = g && (g.pivot.distanceTo(gst.pg) > 0.005 * k || 2 * Math.acos(Math.min(1, Math.abs(g.bq.dot(gst.qg)))) > 3 * k * Math.PI / 180);
+  const visible = gst.shown = !!(show && behind);
   for (const x of ghost.parts) x.ghost.visible = visible;
   if (!visible) return;
   // the base where the ghost is; the fingers as the real ones are now (open / closed), relative to it
@@ -263,11 +266,154 @@ window.addEventListener('keydown', (e) => {
   e.preventDefault();                                     // (no page scroll, no button press)
   hand?.toggleGrip();
 });
+// ---- the setup wizard: each step checks itself and says what to fix (hint), with a short
+// looping picture of the gesture. Then "Start": the hand drives and the practice begins.
+const setup = { light: null, keys: new Set(), slowSince: null, slowAsked: false };
+const anim = (a, b) => `<span class="flip"><i>${a}</i><i>${b}</i></span>`;
+// ---- the repositioning drill (like lifting a mouse off the desk): the candidate does it once,
+// guided part by part, with the picture beside it. Tracked from the hand in the camera picture
+// (the robot doesn't move during the setup): the wrist's position across the picture.
+const DRILL_PARTS = ['Open hand: move it to one side', 'Make a fist', 'Keep the fist: move your hand back',
+                     'Open your hand: move it to the side again'];
+const DRILL = `<ol class="drill">${DRILL_PARTS.map((t, i) => `<li data-i="${i}"><b>${i + 1}</b><span>${t}</span></li>`).join('')}</ol>${clutchDemo()}`;
+const drill = { part: 0, x0: null, dir: 0, xf: null, x1: null, hint: '' };
+const MOVE_OPEN = 0.14, MOVE_BACK = 0.11, MOVE_AGAIN = 0.1;    // [picture widths]
+function drillTick(st) {
+  if (!st?.tracked || !st.lm) { drill.hint = 'Show your hand to the camera'; return; }
+  const x = st.lm[0].x, g = st.gesture, d = drill;
+  d.hint = '';
+  if (d.part === 0) {                                  // open, moving to one side
+    if (g !== 'open') { d.x0 = null; d.hint = 'Start with your hand open'; return; }
+    d.x0 ??= x;
+    if (Math.abs(x - d.x0) > MOVE_OPEN) { d.dir = Math.sign(x - d.x0); d.part = 1; }
+  } else if (d.part === 1) {                           // a fist
+    if (g === 'fist') { d.xf = x; d.part = 2; } else d.hint = 'Now close your hand into a fist';
+  } else if (d.part === 2) {                           // the fist back the other way
+    if (g !== 'fist') { d.hint = 'Keep the fist while you move your hand back'; return; }
+    if ((d.xf - x) * d.dir > MOVE_BACK) d.part = 3;
+    else if ((x - d.xf) * d.dir > 0.03) d.xf = x;     // (still going the first way: measure from the turn)
+  } else if (d.part === 3) {                           // open again and on
+    if (g !== 'open') { d.x1 = null; d.hint = 'Open your hand'; return; }
+    d.x1 ??= x;
+    if ((x - d.x1) * d.dir > MOVE_AGAIN) d.part = 4;
+  }
+}
+window.__drill = { tick: drillTick, state: drill };               // (the browser console, tests)
+function drillRender() {
+  document.querySelectorAll('#checklist .drill li').forEach((li, i) => {
+    li.classList.toggle('done', i < drill.part);
+    li.classList.toggle('now', i === drill.part);
+  });
+}
+const boxHint = (st) => !st?.tracked ? 'Show your hand to the camera, palm toward it'
+  : st.box.out || !st.box.inside ? 'Move your whole hand into the box'
+  : st.box.fit === 'far' ? 'Move your hand closer to the camera'
+  : st.box.fit === 'close' ? 'Move your hand back a little'
+  : st.box.near ? 'A little more toward the middle of the box' : true;
+const STEPS = again ? [
+  ['camera', 'Camera on'],
+  ['box', 'Welcome back: put your hand in the box', boxHint, { hold: 15 }],
+  ['open', 'Open your hand ✋: it <b>drives</b> the robot again', (st) => st?.gesture === 'open' && !st.gripping || (st?.gripping ? 'Pinch 🤏 once to open the gripper' : false)],
+] : [
+  ['camera', 'Turn on your camera'],
+  ['light', 'Enough light on your hand', (st, c) => c.light === null ? false
+    : c.light < 55 ? 'Too dark: turn on a light or face a window' : c.light > 225 ? 'Too bright: avoid a window behind you or a light shining into the camera' : true, { hold: 3 }],
+  ['speed', 'This computer tracks fast enough', (st, c) => {
+    if (!st) return false;
+    if (st.fps >= 15) return true;
+    return c.slow ? `Only ${st.fps} pictures a second: close other apps and browser tabs, plug in the charger. Or track on our server, or continue anyway.`
+      : 'Measuring…';
+  }, { hold: 20 }],
+  ['box', 'Put your hand in the box, palm toward the camera, about an arm\'s length away', boxHint, { hold: 20 }],
+  ['fist', 'Make a fist ✊: that <b>pauses</b> the robot', (st) => st?.gesture === 'fist', { anim: anim('✋', '✊') }],
+  ['drill', '<b>Repositioning your hand</b>, like lifting a mouse off the desk: when your hand runs out of room, '
+    + 'make a fist, bring it back, open it and carry on. Try it once:',
+   () => drill.part >= 4 || drill.hint || false, { anim: DRILL, wide: true, hold: 1 }],
+  ['pinch', GRIP_TEXT, (st) => st?.gripping === true, { anim: anim('✋', '🤏') }],
+  ['open', OPEN_TEXT, (st) => (st?.gesture === 'open' && !st.gripping) || (st?.gripping ? 'Pinch 🤏 once more: the gripper opens' : false),
+   { anim: anim('🤏', '✋') }],
+  ['keys', 'Press <b>Q</b> and <b>E</b>: they turn the gripper left and right', (st, c) => c.keys.has('KeyQ') && c.keys.has('KeyE')
+    || (c.keys.size ? `Now press ${c.keys.has('KeyQ') ? 'E' : 'Q'}` : false), { hold: 1, anim: '<span class="key">Q</span><span class="key">E</span>' }],
+  ['view', 'Look around the table with the mouse: <b>drag</b> to turn the view, <b>scroll</b> (or pinch on a touchpad) to zoom in and out. <b>R</b> resets it.',
+   (st, c) => (c.view.dragged && c.view.zoomed) || (c.view.dragged ? 'Now scroll to zoom in and out' : c.view.zoomed ? 'Now drag with the mouse to turn the view' : false),
+   { hold: 1, anim: anim('🖱️', '🔍') }],
+];
+// the look-around step: a real drag (not a click) and a scroll / pinch on the 3D view
+const view = { dragged: false, zoomed: false };
+function watchView() {
+  const cv = window.__teleop?.renderer?.domElement;
+  if (!cv || cv.dataset.watched) return;
+  cv.dataset.watched = '1';
+  let down = null;
+  cv.addEventListener('pointerdown', (e) => { down = [e.clientX, e.clientY]; });
+  cv.addEventListener('pointermove', (e) => {
+    if (down && e.buttons && Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 40) view.dragged = true;
+  });
+  window.addEventListener('pointerup', () => { down = null; });
+  cv.addEventListener('wheel', () => { view.zoomed = true; }, { passive: true });
+}
+window.addEventListener('teleop-scene', watchView);
+setTimeout(watchView, 0);
 const checklist = new Checklist($('checklist'), () => {
+  // done: a short summary, then the candidate starts when ready
+  $('readyBox').classList.remove('hidden');
+  $('slowBox').classList.add('hidden');
+}, { steps: STEPS });
+$('serverBtn').addEventListener('click', async () => {
+  const b = $('serverBtn');
+  b.disabled = true; b.textContent = 'Starting the server tracker…';
+  try {
+    await hand.useServer(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${window.TELEOP_BASE}/track`);
+    b.textContent = 'Tracking on the server';
+    setup.slowSince = null;                                 // (measure again, now with the server)
+  } catch (e) {
+    b.disabled = false; b.textContent = 'Track on our server';
+    toast('The server tracker is not available right now: continue anyway, or try again later.');
+  }
+});
+$('goBtn').addEventListener('click', () => {
   hand.arm(true);                                         // (now the hand drives: the test goes on)
   $('handBox').classList.remove('hidden');
   store(s => s.setItem(DONE_KEY, '1'));
-}, { again, gripText: GRIP_TEXT, openText: OPEN_TEXT });
+});
+$('slowBtn').addEventListener('click', () => checklist.skip());
+window.addEventListener('keydown', (e) => { if (e.code === 'KeyQ' || e.code === 'KeyE') setup.keys.add(e.code); });
+/** the camera picture's brightness (0-255), twice a second */
+const lumaCanvas = document.createElement('canvas');
+lumaCanvas.width = 32; lumaCanvas.height = 24;
+setInterval(() => {
+  if (!cam?.video?.videoWidth) return;
+  const g = lumaCanvas.getContext('2d', { willReadFrequently: true });
+  g.drawImage(cam.video, 0, 0, 32, 24);
+  const px = g.getImageData(0, 0, 32, 24).data;
+  let s = 0;
+  for (let i = 0; i < px.length; i += 4) s += 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+  setup.light = s / (px.length / 4);
+}, 500);
+/** the wizard's checks, every tracker frame: the slow-computer step offers "continue anyway" after 6 s */
+function setupTick(st) {
+  if (checklist.current === 'speed') {
+    if (st.fps < 15) setup.slowSince ??= performance.now(); else setup.slowSince = null;
+    const slow = setup.slowSince !== null && performance.now() - setup.slowSince > 6000;
+    $('slowBox').classList.toggle('hidden', !slow && hand?.path !== 'server');
+    checklist.update(true, st, { light: setup.light, keys: setup.keys, slow });
+  } else {
+    $('slowBox').classList.add('hidden');
+    checklist.update(true, st, { light: setup.light, keys: setup.keys, view });
+  }
+  // the look-around step: the setup becomes a side panel, the 3D view free to try
+  $('start').classList.toggle('peek', checklist.current === 'view');
+  if (checklist.current === 'drill') { drillTick(st); drillRender(); }
+}
+/** during the test: a banner when the hand is near the box's edge or out of it (the robot pauses) */
+function boxBanner(st) {
+  const el = $('boxWarn');
+  const show = hand?.armed && st.tracked && (st.outOfBox || st.box?.near);
+  el.classList.toggle('hidden', !show);
+  if (!show) return;
+  el.classList.toggle('out', !!st.outOfBox);
+  el.textContent = st.outOfBox ? 'Robot paused: bring your hand back into the box' : 'Near the edge of the box: move your hand toward the middle';
+}
 // a pinch (thumb and index finger together) closes the gripper, the next opens it; the hand only
 // moves the robot: Q/E turn the gripper, W/S and A/D tilt it (in tasks with full rotation). Used
 // here (this computer's camera) and sent to the robot (a phone as the camera reads them from its
@@ -286,20 +432,22 @@ window.addEventListener('keydown', (e) => {
 window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyC' && !e.repeat && !(e.target instanceof HTMLInputElement)) $('handBox').classList.toggle('big');
 });
-// The tracker slow (under 22 pictures a second for 3 s, the camera giving more): the 3D view
-// draws fewer pixels and frames, step by step (it shares the graphics chip). While the start
-// screen covers it, it hardly draws at all.
-const RENDER_STEPS = [{ maxPixels: 1.6e6, maxFps: 40 }, { maxPixels: 1.0e6, maxFps: 30 }, { maxPixels: 0.6e6, maxFps: 30 },
-                      { maxPixels: 0.4e6, maxFps: 24 }];
+// The 3D view starts sharp (a full 1080p screen at its own resolution, or a 4K one at half). The
+// tracker slow (under 22 pictures a second for 3 s, the camera giving more): the view draws fewer
+// pixels and frames, step by step (it shares the graphics chip), but never below ~1.2 MP (it
+// went down to 0.4 MP, too blurry to tell the shapes apart). Tracking on the server: no need.
+// While the start screen covers it, it hardly draws at all.
+const RENDER_STEPS = [{ maxPixels: 4.2e6, maxFps: 60 }, { maxPixels: 2.6e6, maxFps: 45 }, { maxPixels: 1.8e6, maxFps: 40 },
+                      { maxPixels: 1.2e6, maxFps: 30 }];
 let renderStep = 0, slowSince = null;
 function adaptRender(st) {
   const T = window.__teleop;
   if (!T?.setBudget) return;
-  const covered = !$('start').classList.contains('hidden');
+  const covered = !$('start').classList.contains('hidden') && !$('start').classList.contains('peek');
   const want = covered ? { maxPixels: RENDER_STEPS[renderStep].maxPixels, maxFps: 5 } : RENDER_STEPS[renderStep];
   if (T.budget.maxFps !== want.maxFps || T.budget.maxPixels !== want.maxPixels) T.setBudget(want);
   const now = performance.now();
-  if (st.fps < 22 && renderStep < RENDER_STEPS.length - 1) {
+  if (st.fps < 22 && hand?.path !== 'server' && renderStep < RENDER_STEPS.length - 1) {
     if (slowSince === null) slowSince = now;
     else if (now - slowSince > 3000) { renderStep++; slowSince = null; console.info('render budget lowered', RENDER_STEPS[renderStep]); }
   } else slowSince = null;
@@ -317,8 +465,14 @@ function drawLoop(now) {
   requestAnimationFrame(drawLoop);
   if (!cam || now - lastDraw < 30) return;            // (the camera gives ~30 pictures a second: no more)
   lastDraw = now;
-  if (!$('start').classList.contains('hidden')) drawHand($('startCam'), cam.video, handState, { dim: 0.15 });
-  if (!$('handBox').classList.contains('hidden')) drawHand($('handPreview'), cam.video, handState, { dim: 0.2 });
+  if (!$('start').classList.contains('hidden')) {
+    drawHand($('startCam'), cam.video, handState, { dim: 0.15 });
+    drawBox($('startCam'), cam.video, handState, HAND_BOX);
+  }
+  if (!$('handBox').classList.contains('hidden')) {
+    drawHand($('handPreview'), cam.video, handState, { dim: 0.2 });
+    drawBox($('handPreview'), cam.video, handState, HAND_BOX);
+  }
 }
 requestAnimationFrame(drawLoop);
 $('camBtn').addEventListener('click', async () => {
@@ -338,7 +492,8 @@ $('camBtn').addEventListener('click', async () => {
       log: (frames) => window.__teleop?.send?.({ type: 'track_log', frames }),   // (the raw points, for tuning)
       onFrame: (st) => {
         handState = st;
-        checklist.update(true, st);
+        setupTick(st);
+        boxBanner(st);
         setChip($('startChip'), st);
         setChip($('handChip'), st);
         $('handStats').textContent = st.tracked ? `${st.fps} fps · ${st.latency} ms` : `${st.fps} fps`;
@@ -362,9 +517,63 @@ $('phoneCamBtn').addEventListener('click', (e) => {
   e.preventDefault();
   $('phoneCamQr').classList.toggle('hidden');
 });
-window.addEventListener('keydown', (e) => {
-  if (e.code === 'KeyH' && hand?.armed) window.__teleop?.send?.({ type: 'home' });
+// ---- the task's description card: 'reading' (full screen, before the task: Start), 'info' (over
+// the scene during the task: Close; the clock keeps running)
+let lastTask = null, cardMode = null, cardPhase = null, readySent = null;   // (Start pressed: {phase, at})
+function showTaskCard(g, mode) {
+  if (cardMode === mode && cardPhase === g.phase) return;             // (already up: don't redraw)
+  cardMode = mode; cardPhase = g.phase;
+  $('taskTag').textContent = g.scored ? 'Scored task' : 'Practice · not scored';
+  $('taskTitle').textContent = g.title;
+  $('taskText').textContent = g.text;
+  // the practice: how to reposition the hand once more (the move a beginner finds hardest)
+  $('taskDemo').innerHTML = g.scored ? '' : '<p class="demoNote"><b>Run out of room?</b> Make a fist, bring your hand back, '
+    + 'open it and carry on: the robot stays put while your hand is a fist.</p>' + clutchDemo();
+  const ctrls =['✋ move', '✊ pause', '🤏 grip / let go', 'Q E turn'];
+  if (g.rotation === 'full') ctrls.push('W S A D tilt');
+  ctrls.push('H home', '🖱 drag: look around', 'scroll: zoom');
+  $('taskCtrls').innerHTML = ctrls.map(c => `<span>${c}</span>`).join('');
+  $('taskMeta').textContent = mode === 'reading'
+    ? `Time: ${fmt(g.limit)}. The clock starts when you press Start (after a 3-second countdown).`
+    : `Time: ${fmt(g.limit)} in all. The clock keeps running while this is open.`;
+  const c = $('taskCard');
+  c.classList.remove('hidden', 'reading', 'info');
+  c.classList.add(mode);
+}
+function hideTaskCard() { cardMode = null; $('taskCard').classList.add('hidden'); }
+$('taskStart').addEventListener('click', (e) => {
+  e.currentTarget.blur();
+  readySent = { phase: cardPhase, at: performance.now() };
+  hideTaskCard();
+  window.__teleop?.send?.({ type: 'task_ready' });
 });
+$('taskClose').addEventListener('click', (e) => { e.currentTarget.blur(); hideTaskCard(); });
+$('infoBtn').addEventListener('click', (e) => { e.currentTarget.blur(); if (lastTask) showTaskCard(lastTask, 'info'); });
+
+// the graphics chip reset (main.js now draws lightly): say so; the adaptive steps start from the lightest
+window.addEventListener('teleop-context-lost', () => { renderStep = RENDER_STEPS.length - 1; toast('The graphics reset: the 3D view is reloading…'); });
+window.addEventListener('teleop-context-restored', () => toast('3D view back'));
+// Home (H or the button): the gripper glides back to its start position; the page says so
+function goHome() {
+  if (!hand?.armed) return;
+  window.__teleop?.send?.({ type: 'home' });              // (the server's status says when it glides: the toast below)
+}
+window.addEventListener('keydown', (e) => { if (e.code === 'KeyH' && !e.repeat) goHome(); });
+$('homeBtn').addEventListener('click', (e) => { e.currentTarget.blur(); goHome(); });
+// Skip / Finish: end the running task now (what was done so far counts), after a confirmation
+function askEndTask(how) {
+  const skip = how === 'skip';
+  $('confirmTitle').textContent = skip ? 'Skip this task?' : 'Finish this task?';
+  $('confirmText').textContent = skip
+    ? 'You move on to the next task. What you have done in this one so far still counts; you cannot come back to it.'
+    : 'This task ends now and what you have done so far counts. You cannot come back to it.';
+  $('confirmYes').textContent = skip ? 'Skip task' : 'Finish task';
+  $('confirmYes').onclick = () => { $('confirmBox').classList.add('hidden'); window.__teleop?.send?.({ type: 'end_task', how }); };
+  $('confirmBox').classList.remove('hidden');
+}
+$('confirmNo').addEventListener('click', () => $('confirmBox').classList.add('hidden'));
+$('skipBtn').addEventListener('click', (e) => { e.currentTarget.blur(); askEndTask('skip'); });
+$('finishBtn').addEventListener('click', (e) => { e.currentTarget.blur(); askEndTask('finish'); });
 window.addEventListener('teleop-status', (ev) => {
   lastStatus = ev.detail;
   $('robotState').textContent = 'Robot connected';
@@ -420,8 +629,19 @@ window.addEventListener('teleop-status', (ev) => {
     $('timer').textContent = '';
     $('practice').textContent = '';
   }
+  // the task's description: first on its own (the 3D scene hidden, the clock stopped) until the
+  // candidate presses Start; during the task the info button opens it again over the scene
+  lastTask = g;
+  if (g.kind === 'task' && g.waiting) {
+    if (readySent?.phase !== g.phase) showTaskCard(g, 'reading');
+    else if (performance.now() - readySent.at > 2000) { readySent.at = performance.now(); window.__teleop?.send?.({ type: 'task_ready' }); }
+  }
+  else if (cardMode === 'reading') hideTaskCard();
+  else if (cardMode === 'info' && (g.kind !== 'task' || g.phase !== cardPhase)) hideTaskCard();
   $('count').textContent = g.intro > 0 ? Math.ceil(g.intro) : '';
-  if (g.homing && !wasHoming) toast('Going home…');
+  // while a task runs: task info, Home, Skip and Finish
+  $('taskBar').classList.toggle('hidden', !(g.kind === 'task' && !g.waiting && g.intro === 0 && !g.finished && hand?.armed));
+  if (g.homing && !wasHoming) toast('🏠 The robot is returning to its home position…');
   wasHoming = !!g.homing;
   if (g.message && g.message !== lastMsg) toast(g.message);
   lastMsg = g.message;

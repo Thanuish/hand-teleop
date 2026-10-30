@@ -8,7 +8,7 @@ install. Up to about 15 people at a time, run from your laptop.
 ```
  Candidate's computer                 Your laptop                            Candidate's phone
  ┌────────────────────┐   https   ┌──────────────────────────┐   https   ┌───────────────────┐
- │ the robot (3D),    │ ◄───────► │ lobby: invite codes,     │ ◄───────► │ motion tracking   │
+ │ the robot (3D),    │ ◄───────► │ lobby: name + email,     │ ◄───────► │ motion tracking   │
  │ instructions,      │  tunnel   │ one simulator per        │  tunnel   │ (Chrome, Android) │
  │ timer, QR code     │           │ candidate, results page  │           │ MOVE / GRAB       │
  └────────────────────┘           └──────────────────────────┘           └───────────────────┘
@@ -23,15 +23,12 @@ install. Up to about 15 people at a time, run from your laptop.
 | Practice 2 | put a yellow cube into a green square | 2:30 | no |
 | Task 1: shapes | put a big square, a small square and a bar into their outlines (the bar must be turned 90°) | 4:00 | yes |
 | Task 2: sorting | red ball, blue cube, green cylinder into the bin of their colour | 3:00 | yes |
-| Task 3: tilt and pour | take a book out of its holder and lay it flat on a mat (tilt 90°); pour 4 balls from a clear cup into a bowl (tip the cup) and set the cup down upright | 7:00 | yes |
 | Ring on pegs | three rings stand in holders; hang each on the peg straight ahead of it, of its colour. The pegs lean at different angles (almost level, 60°, 45°), so each ring needs a different tilt. **In rounds:** when all three are on, they come back for the next round, until the time is up | 5:00 | yes |
 | Tower | blocks appear one at a time on a yellow square; stack them on a wooden platform as high as possible (6 blocks, 5 cm each) | 4:00 | yes |
 
 Practice and tasks 1–2 use the phone's position and its turn left / right; the gripper keeps
-pointing down. **Task 3 uses all six degrees of freedom**: tilting and twisting the phone also
-tilts and twists the gripper (the phone shows "TILT ON"). It's closest to real manipulation
-such as handling clothes: lifting things off a surface, turning them over, tipping and pouring.
-Which phases use full rotation is the `rotation` setting of each phase in
+pointing down. **Ring on pegs uses all six degrees of freedom**: the gripper also tilts (W S A D
+with the hand control), so each ring can be angled onto its peg. Which phases use full rotation is the `rotation` setting of each phase in
 `config/screening.toml`.
 
 **Physics:** the same as the VR blocks task: rigid MuJoCo bodies, light blocks (80 g), the UR5e's
@@ -79,8 +76,8 @@ Android phones from the last few years). iPhones can't do this in a browser.
 | Precision | 20 | grabs that lifted something ÷ grab attempts, less a third per drop, a quarter per wrong bin, a third per tower fall |
 | Economy | 10 | how directly the robot moved: the task's par path (`par_path_m`) × completion ÷ the path moved |
 
-**Overall** = the tasks' scores averaged by their `weight` (tilt-and-pour and rings count 1.5×:
-all six degrees of freedom). Then a **grade** (A ≥ 85, B ≥ 70, C ≥ 55, D ≥ 40, else F) and a
+**Overall** = the tasks' scores averaged by their `weight` (rings count 1.5×: all six degrees of
+freedom). Then a **grade** (A ≥ 85, B ≥ 70, C ≥ 55, D ≥ 40, else F) and a
 **skill profile**: the four parts over all tasks, 0–100, so you see *why* (e.g. completes
 everything but slowly). The admin page shows the grade and profile; hover a task's score for its
 parts. **Pass** = overall ≥ the pass mark (default 50, set on the admin page or in the
@@ -101,17 +98,18 @@ connection doesn't cost points. The weights, pars and grade bands are in the con
 2. **Start:** double-click **`TEST_TELEOP\start_screening.bat`**. It starts the lobby and the tunnel, and opens
    the results page (`http://localhost:8000/admin`) in your browser. The page shows the public
    address, which is new each time you start.
-3. **Invite:** on the results page, create invite codes (for example 15 for a batch). Send each
-   candidate one link (`https://<address>/?code=XXXXXXXX`). Each code works once.
-4. **Watch:** the results page updates live: who is playing, in which phase, the scores, and
-   PASS / FAIL. **Download CSV** exports everything. **Allow retake** gives someone a second
-   attempt (the first is kept).
+3. **Invite:** send every candidate the same link, the public address. They enter their name
+   and email, agree to the recording, and start. **One attempt per email:** joining again with
+   the same email shows "You've already taken the test", except from the same browser while
+   that test is still running (a cookie remembers it), so a reloaded or closed tab can go back.
+4. **Watch:** the results page updates live: who is playing (name, email), in which phase, the
+   scores, and PASS / FAIL. **Download CSV** exports everything. **Allow retake** lets that email
+   join once more: the first attempt stays in the list (greyed, status `reset`) and in its folder.
 
 **Testing one part:** on the results page, **Test one part** makes a link that runs only the
-part you pick (for example Task 3): phone pairing, then straight into that part, then done. Such
-codes go into the batch "Testing" and get no pass / fail. From the command line:
-`python -m TEST_TELEOP.lobby batch Testing --n 1 --only tilt` (parts: `reach`, `pick`, `shapes`,
-`sort`, `tilt`).
+part you pick (for example Task 3): phone pairing, then straight into that part, then done. Each
+visit is a new run in the batch "Test runs", with no pass / fail. Without `?only=` the link
+(`/t/<token>`, the token is in `data/screening/test_link.json`) runs the whole test.
 
 **The public address** comes from Cloudflare's free quick tunnel, which gets a new random address
 each time it starts. `start_screening.bat` runs it in its own window ("Screening tunnel"): keep
@@ -123,17 +121,19 @@ Keep the laptop on, plugged in and online while candidates play. Closing the win
 test for everyone. Each candidate needs a computer with a modern browser and an Android phone;
 the first load is about 5 MB.
 
-**Where results go:** `data/screening/` holds `candidates.json` (codes, names, status),
-`settings.json` (how many at a time) and per candidate `<batch>/<code>/screen/attempt/` with
+**Where results go:** `data/screening/` holds `screening.db` (SQLite, table `candidates`: one
+row per attempt with a hidden code, email, name, batch = the month it started, status, times),
+`settings.json` (how many at a time) and per attempt `<batch>/<code>/screen/attempt/` with
 `results.json` (all metrics and scores), `screening.toml` (the configuration the attempt ran
 with), one recording per phase (`episode_XXXX.hdf5`, replay with `scripts/replay.py`) and the
-simulator's log.
+simulator's log. An older `candidates.json` (from invite codes) is moved into the database the
+first time the lobby starts and kept as `candidates.json.bak`.
 
 **Privacy:** candidates agree to the recording on the start page. Decide how long you keep the
 recordings, and delete a candidate's folder when you no longer need it.
 
-**Test it yourself first:** run `start_screening.bat`, create a code, open the public address
-on your computer and scan the QR code with your Android phone. Without a phone,
+**Test it yourself first:** run `start_screening.bat`, open the public address on your
+computer (or the test link on the results page, which skips the form and the one-per-email rule) and scan the QR code with your Android phone. Without a phone,
 `python -m TEST_TELEOP.screen_bot` plays the whole test automatically and prints the scores.
 
 ## How it works
@@ -145,7 +145,7 @@ viewer) and adds only what is specific to the test. Importing `TEST_TELEOP` regi
 ```
 TEST_TELEOP/
   start_screening.bat  start the lobby and the public tunnel (double-click)
-  lobby.py         the web server candidates connect to: invite codes, consent, one simulator
+  lobby.py         the web server candidates connect to: name + email, consent, one simulator
                    per candidate (a separate process), relays the monitor and phone to it,
                    results page and CSV (/admin, this PC only), Cloudflare quick tunnel
   worker.py        one candidate's simulator: vrteleop's server with the task registered

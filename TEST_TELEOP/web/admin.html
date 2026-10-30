@@ -3,192 +3,257 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Screening results</title>
-  <style>
-    body { margin: 0; padding: 22px; background: #15171c; color: #e8e8e8; font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-    h1 { font-size: 22px; margin: 0 0 4px; } h2 { font-size: 16px; margin: 22px 0 8px; }
-    .muted { color: #8b919c; }
-    .panel { background: #1f2229; border: 1px solid #333842; border-radius: 12px; padding: 14px 16px; margin-top: 14px; }
-    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-    input { background: #111; color: #eee; border: 1px solid #444; border-radius: 6px; padding: 6px 8px; font: inherit; }
-    input[type=number] { width: 80px; }
-    button, a.btn { background: #2f6fde; color: #fff; border: 0; border-radius: 6px; padding: 7px 12px; font: inherit; cursor: pointer; text-decoration: none; }
-    button.secondary { background: #3a3f4a; }
-    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-    th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #2c3038; white-space: nowrap; }
-    th { color: #9aa1ad; font-weight: 600; cursor: pointer; }
-    td.num { text-align: right; font-variant-numeric: tabular-nums; }
-    .pass { color: #4cd07d; font-weight: 700; } .fail { color: #ff7070; font-weight: 700; }
-    .grade.gA { color: #4cd07d; } .grade.gB { color: #9be37a; } .grade.gC { color: #ffd24a; }
-    .grade.gD { color: #ffa24a; } .grade.gF { color: #ff7070; }
-    .st { padding: 2px 8px; border-radius: 10px; font-size: 12px; background: #333842; }
-    .st.playing { background: #2f6fde; } .st.done { background: #2d6b45; } .st.abandoned { background: #7a4a1f; }
-    #codes { font: 13px ui-monospace, Menlo, Consolas, monospace; white-space: pre; color: #cfe; }
-  </style>
+  <title>Sereact · Screening admin</title>
+  <link rel="stylesheet" href="/test-static/brand.css" /><link rel="icon" type="image/png" href="/test-static/sereact-logo.png">
+  <link rel="stylesheet" href="/test-static/admin.css" />
 </head>
 <body>
-  <h1>Screening results</h1>
-  <div class="muted">Updates every few seconds. Candidates open the public address of your tunnel and enter their invite code.</div>
-  <div class="panel"><b>Public address for candidates:</b> <span id="publicUrl" style="font-family:ui-monospace,monospace"></span></div>
-  <div class="panel" id="configError" style="display:none;border-color:#a44;color:#fbb;white-space:pre-wrap"></div>
+  <header class="top">
+    <span class="sr-brand"><span class="sr-logo" aria-hidden="true"></span><span class="sr-mark">sere<b>act</b></span><span class="sr-divider"></span>
+      <span class="sr-product">Teleoperation assessment · admin</span></span>
+    <nav class="tabs"><button class="tab on" data-tab="people">Candidates</button><button class="tab" data-tab="settings">Settings</button></nav>
+  </header>
 
-  <div class="panel">
-    <div class="row">
-      <b>Pass mark</b> overall score ≥ <input id="passScore" type="number" min="0" max="100" step="1">
-      <span id="mustComplete"></span>
-      <button class="secondary" id="saveSettings">Save</button>
-      <span class="muted" id="saved"></span>
-    </div>
-    <div class="muted" style="margin-top:6px">
-      Score per task (0-100): steps completed + time left (if completed) + grasp efficiency (minus a share per drop); weights in the configuration.
-      Overall = mean of the scored tasks. Reach eff. = straight-line distance / distance moved in the reach practice (1 = perfectly direct).
-      The test (phases, objects, scoring, pass mark) is defined in <code id="configPath"></code>; the pass mark saved here goes into that file.
-    </div>
-  </div>
+  <main>
+    <section class="linkbar card">
+      <div><div class="k">Link for candidates (everyone gets the same one)</div>
+        <div class="v"><code id="publicUrl">…</code> <button class="ghost sm" id="copyLink">Copy</button></div></div>
+      <div><div class="k">Your own test run (no email, starts fresh every time)</div>
+        <div class="v"><a id="testLink" target="_blank" rel="noopener">open</a></div></div>
+    </section>
+    <div class="card err hidden" id="configError"></div>
 
-  <div class="panel">
-    <div class="row">
-      <b>Test one part</b>
-      <select id="onlyPart" style="background:#111;color:#eee;border:1px solid #444;border-radius:6px;padding:6px 8px;font:inherit">
-      </select>
-      <button id="makeTest">Create test link</button>
-      <span class="muted">phone pairing, then only that part (no verdict; batch "Testing")</span>
-    </div>
-    <div id="testLink" style="font:13px ui-monospace,Menlo,Consolas,monospace;color:#cfe;margin-top:6px"></div>
-  </div>
+    <!-- ===================================================== candidates -->
+    <section id="tab-people">
+      <div class="tiles" id="tiles"></div>
 
-  <div class="panel">
-    <div class="row">
-      <b>New invite codes</b> batch name <input id="batchName" placeholder="e.g. October A">
-      number <input id="batchN" type="number" value="15" min="1" max="100">
-      <button id="makeBatch">Create</button>
-      <a class="btn" href="/admin/results.csv">Download CSV</a>
-    </div>
-    <div id="codes"></div>
-  </div>
+      <div class="toolbar">
+        <input id="search" type="search" placeholder="Search name, email, job…" />
+        <div class="chips" id="statusChips">
+          <button data-s="all" class="on">All</button><button data-s="invited">Not started</button>
+          <button data-s="playing">In progress</button><button data-s="done">Finished</button><button data-s="abandoned">Left early</button>
+        </div>
+        <select id="verdictFilter"><option value="">All verdicts</option></select>
+        <label class="toggle"><input type="checkbox" id="showTests"> Test runs</label>
+        <span class="grow"></span>
+        <button class="ghost" id="importBtn">Import from Ashby</button>
+        <a class="btn ghost" href="/admin/results.csv">Download CSV</a>
+      </div>
 
-  <h2>Candidates <span class="muted" id="count"></span></h2>
-  <div style="overflow-x:auto"><table>
-    <thead><tr>
-      <th data-k="name">Name</th><th data-k="code">Code</th><th data-k="batch">Batch</th><th data-k="status">Status</th>
-      <th data-k="phase">Phase</th><th data-k="reach_efficiency">Reach eff.</th>
-      <th id="taskCols" style="display:none"></th><th data-k="overall">Overall</th><th data-k="grade">Grade</th>
-      <th data-k="completion" title="Skill profile over all tasks (0-100): completion · speed · precision · economy of motion">Skills <span class="muted">C · S · P · E</span></th>
-      <th data-k="pass">Result</th>
-      <th data-k="started">Started</th><th></th>
-    </tr></thead>
-    <tbody id="rows"></tbody>
-  </table></div>
+      <div class="tablewrap card">
+        <table>
+          <thead><tr>
+            <th data-k="name">Candidate</th><th data-k="job">Job</th>
+            <th data-k="invited_at">Invited</th><th data-k="started">Started</th><th data-k="finished">Finished</th>
+            <th data-k="attempts" class="num">Tries</th><th data-k="overall" class="num">Score</th>
+            <th data-k="learning">Learning</th><th data-k="verdict_rank">Verdict</th><th></th>
+          </tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <div class="empty hidden" id="empty">No candidates yet. Import the invited people from Ashby, or share the link.</div>
+      </div>
+      <p class="note">The verdict is a suggestion from the test alone (score, learning during the test, tracking quality): read the
+        reasons in each report. Its thresholds are under <code>[recommendation]</code> in <code id="configPath"></code>.</p>
+    </section>
+
+    <!-- ===================================================== settings -->
+    <section id="tab-settings" class="hidden">
+      <div class="card pad">
+        <h3>New candidates</h3>
+        <div class="row"><label class="toggle"><input type="checkbox" id="accepting"> Accept new candidates</label>
+          <span class="muted">Off: the link says "closed for a short update" (for a deploy); tests already running go on.</span></div>
+        <div class="row" style="margin-top:10px">At most <input id="maxConc" type="number" min="1" max="200" class="w80"> tests at the same time
+          <span class="muted">(about 1 CPU core each on the server)</span><button id="saveLobby">Save</button><span class="muted" id="savedLobby"></span></div>
+      </div>
+      <div class="card pad">
+        <h3>Pass mark</h3>
+        <div class="row">Overall score ≥ <input id="passScore" type="number" min="0" max="100" step="1" class="w80">
+          <span id="mustComplete"></span><button id="saveSettings">Save</button><span class="muted" id="saved"></span></div>
+        <p class="muted">Score per task (0-100): completion 50 + speed against the task's par time 20 + precision (grasps, drops,
+          wrong bins, falls) 20 + economy of motion 10. Overall = the tasks' weighted mean, then a grade (A ≥ 85 … F).</p>
+      </div>
+      <div class="card pad">
+        <h3>Test one part</h3>
+        <div class="row"><select id="onlyPart"></select><button id="makeTest">Make a test link</button></div>
+        <div id="partLink" class="mono"></div>
+        <p class="muted">Straight into that part, no verdict; it shows as a test run.</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- ===================================================== import -->
+  <div class="modal hidden" id="importModal"><div class="card pad dialog">
+    <h3>Import invited candidates</h3>
+    <p class="muted">Paste the list from Ashby (or upload its CSV export). One person per line: name, email and the date the
+      invitation was sent; a job or role column is used if there is one. People already on the list are updated.</p>
+    <textarea id="importText" rows="9" placeholder="Name,Email,Invited,Job&#10;Ada Lovelace,ada@example.com,2026-11-02,Teleoperator"></textarea>
+    <div class="row"><label class="ghost btn sm">Upload CSV<input type="file" id="importFile" accept=".csv,.tsv,.txt" hidden></label>
+      <span class="grow"></span><button class="ghost" id="importCancel">Cancel</button><button id="importGo">Import</button></div>
+    <div id="importPreview" class="preview"></div>
+  </div></div>
 
 <script>
 const $ = (id) => document.getElementById(id);
-let sortKey = 'overall', sortDir = -1, data = { candidates: [], settings: {} }, settingsLoaded = false;
-const num = (v, d = 1) => v === null || v === undefined ? '' : (+v).toFixed(d);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const num = (v, d = 0) => v === null || v === undefined ? '' : (+v).toFixed(d);
+const day = (s) => s ? String(s).slice(0, 16).replace('T', ' ') : '';
+const VERDICT_RANK = { invite: 1, trainable: 2, retest: 3, not_now: 4, incomplete: 5 };
+let data = { candidates: [] }, sortKey = 'activity', sortDir = -1, statusFilter = 'all', loaded = false;
 
 async function load() {
   const r = await fetch('/admin/api');
   data = await r.json();
-  $('publicUrl').innerHTML = data.public_url ? `<a href="${data.public_url}" style="color:#8bf">${data.public_url}</a>`
-    : (data.tunnel ? 'starting the tunnel…' : 'no tunnel (start the lobby with --tunnel, or use start_screening.bat)');
-  const cfg = data.config;
+  const link = data.public_url || location.origin;
+  document.body.classList.toggle('paused', data.settings.accepting === false);
+  $('publicUrl').textContent = link;
+  $('testLink').href = $('testLink').textContent = (data.public_url || location.origin) + data.test_path;
   $('configPath').textContent = data.config_path;
-  $('configError').style.display = data.config_error ? '' : 'none';
+  $('configError').classList.toggle('hidden', !data.config_error);
   $('configError').textContent = data.config_error ? 'The configuration file has problems (the last good version is used):\n' + data.config_error : '';
-  if (!settingsLoaded) {
-    $('passScore').value = cfg.pass_mark;
-    const tasks = cfg.phases.filter(p => p.kind === 'task');
+  if (!loaded) {
+    const tasks = data.config.phases.filter(p => p.kind === 'task');
+    $('passScore').value = data.config.pass_mark;
     $('mustComplete').innerHTML = tasks.filter(p => !p.scored).map(p =>
-      `<label><input type="checkbox" class="must" value="${esc(p.key)}" ${cfg.must_complete.includes(p.key) ? 'checked' : ''}> ${esc(p.title)} must be completed</label>`).join(' ');
-    $('onlyPart').innerHTML = tasks.map((p, i) =>
-      `<option value="${esc(p.key)}" ${i === tasks.length - 1 ? 'selected' : ''}>${esc(p.title)}</option>`).join('');
-    // a score column per scored task, after "Reach eff."
-    document.querySelectorAll('th.task').forEach(th => th.remove());
-    const anchor = $('taskCols');
-    for (const p of tasks.filter(p => p.scored)) {
-      const th = document.createElement('th');
-      th.className = 'task'; th.dataset.k = p.key; th.textContent = p.title.split(':')[0];
-      th.title = p.title;
-      th.onclick = () => sortBy(p.key);
-      anchor.before(th);
-    }
-    settingsLoaded = true;
+      `<label><input type="checkbox" class="must" value="${esc(p.key)}" ${data.config.must_complete.includes(p.key) ? 'checked' : ''}> ${esc(p.title)} must be completed</label>`).join(' ');
+    $('onlyPart').innerHTML = tasks.map(p => `<option value="${esc(p.key)}">${esc(p.title)}</option>`).join('');
+    $('accepting').checked = data.settings.accepting !== false;
+    $('maxConc').value = data.settings.max_concurrent;
+    $('verdictFilter').innerHTML +=Object.entries(data.verdicts).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('');
+    loaded = true;
   }
   render();
 }
+
+function tiles(all) {
+  const people = all.filter(r => !r.test_run);
+  const n = (f) => people.filter(f).length;
+  const T = [
+    ['Invited', n(r => r.invited), ''], ['Not started', n(r => r.status === 'invited'), ''],
+    ['In progress', n(r => r.status === 'playing'), 'blue'], ['Finished', n(r => r.status === 'done'), ''],
+    ['Invite to interview', n(r => r.verdict === 'invite'), 'ok'], ['Trainable', n(r => r.verdict === 'trainable'), 'warn'],
+    ['Retest suggested', n(r => r.verdict === 'retest'), 'violet'], ['Not on the invite list', n(r => !r.invited), 'muted'],
+  ];
+  $('tiles').innerHTML = T.map(([k, v, c]) => `<div class="tile ${c}"><div class="tv">${v}</div><div class="tk">${k}</div></div>`).join('');
+}
+
 function render() {
-  const rows = [...data.candidates].sort((a, b) => {
+  const all = data.candidates;
+  tiles(all);
+  const q = $('search').value.trim().toLowerCase(), vf = $('verdictFilter').value, tests = $('showTests').checked;
+  let rows = all.filter(r => (tests || !r.test_run)
+    && (statusFilter === 'all' || r.status === statusFilter)
+    && (!vf || r.verdict === vf)
+    && (!q || [r.name, r.email, r.job].some(x => (x || '').toLowerCase().includes(q))));
+  rows.forEach(r => { r.verdict_rank = VERDICT_RANK[r.verdict] ?? 9; r.activity = r.finished || r.started || r.invited_at || ''; });
+  rows.sort((a, b) => {
     const x = a[sortKey], y = b[sortKey];
     if (x === y) return 0;
     if (x === null || x === undefined || x === '') return 1;
     if (y === null || y === undefined || y === '') return -1;
     return (x > y ? 1 : -1) * sortDir;
   });
-  $('count').textContent = `(${rows.length}, ${rows.filter(r => r.status === 'done').length} finished, ` +
-    `${rows.filter(r => r.pass === true).length} passed)`;
-  $('rows').innerHTML = rows.map(r => `<tr>
-    <td>${esc(r.name) || '<span class="muted">not used yet</span>'}</td>
-    <td title="${data.public_url ? data.public_url + '/?code=' + r.code : ''}">${r.code}</td>
-    <td>${esc(r.batch)}${r.only ? ` <span class="st">only ${esc(r.only)}</span>` : ''}</td>
-    <td><span class="st ${r.status}">${r.status}${r.running ? ' ●' : ''}</span></td>
-    <td>${esc(r.phase || '')}</td>
-    <td class="num">${num(r.reach_efficiency, 2)}</td>
-    ${data.config.phases.filter(p => p.scored).map(p =>
-      `<td class="num" title="${esc(partsText(r[p.key + '_parts']))}">${num(r[p.key])} <span class="muted">${r[p.key + '_steps'] || ''}</span></td>`).join('')}
-    <td class="num"><b>${num(r.overall)}</b></td>
-    <td><b class="grade g${esc(r.grade || '')}">${esc(r.grade || '')}</b></td>
-    <td class="num">${r.completion == null ? '' : [r.completion, r.speed, r.precision, r.economy].map(v => num(v, 0)).join(' · ')}</td>
-    <td>${r.pass === true ? '<span class="pass">PASS</span>' : r.pass === false ? '<span class="fail">FAIL</span>' : ''}</td>
-    <td>${esc(r.started || '')}</td>
-    <td>${r.status !== 'new' ? `<button class="secondary" onclick="retake('${r.code}')" title="Let this candidate take the test again (the old attempt is kept)">Allow retake</button>` : ''}</td>
-  </tr>`).join('');
+  document.querySelectorAll('th[data-k]').forEach(th => th.classList.toggle('sorted', th.dataset.k === sortKey));
+  document.querySelectorAll('th[data-k]').forEach(th => th.dataset.dir = th.dataset.k === sortKey ? (sortDir > 0 ? '▲' : '▼') : '');
+  $('empty').classList.toggle('hidden', rows.length > 0);
+  $('rows').innerHTML = rows.map(r => {
+    const status = { invited: 'not started', playing: 'in progress', done: 'finished', abandoned: 'left early', reset: 'retake allowed' }[r.status] || r.status;
+    const tag = r.test_run ? '<span class="tag">test run</span>' : !r.invited ? '<span class="tag warn" title="This email is not on the imported invite list (a typo?)">not invited</span>' : '';
+    const learn = r.learning == null ? '' : `<div class="bar" title="Learning ${num(r.learning)} (50 = no change)"><i style="width:${Math.max(4, r.learning)}%" class="${r.learning >= 60 ? 'ok' : r.learning >= 45 ? 'mid' : 'low'}"></i></div>`;
+    const verdict = r.verdict ? `<span class="pill v-${r.verdict}" title="${esc(r.summary)}">${esc(r.verdict_label)}</span>`
+      : `<span class="st s-${r.status}">${status}${r.running ? ' ●' : ''}</span>`;
+    const tech = (r.tech || []).length ? ` <span class="warnicon" title="${esc(r.tech.join('; '))}">⚠</span>` : '';
+    return `<tr class="${r.code ? 'link' : ''} ${r.status === 'reset' ? 'faded' : ''}" data-code="${esc(r.code || '')}">
+      <td><div class="who">${esc(r.name) || '<span class="muted">—</span>'} ${tag}</div><div class="sub">${esc(r.email)}</div></td>
+      <td>${esc(r.job)}</td>
+      <td class="date">${day(r.invited_at)}</td><td class="date">${day(r.started)}</td><td class="date">${day(r.finished)}</td>
+      <td class="num">${r.attempts || ''}</td>
+      <td class="num">${r.overall == null ? '' : `<b>${num(r.overall)}</b> <span class="grade g${esc(r.grade)}">${esc(r.grade || '')}</span>`}</td>
+      <td>${learn}</td><td>${verdict}${tech}</td>
+      <td class="actions">${r.code ? `<a class="btn ghost sm" href="/admin/report/${esc(r.code)}">Report</a>` : ''}
+        ${r.email && r.code && r.status !== 'reset' && r.status !== 'invited' ? `<button class="ghost sm" data-retake="${esc(r.code)}">Allow retake</button>` : ''}
+        ${!r.code && r.invited ? `<button class="ghost sm" data-uninvite="${esc(r.email)}" title="Remove from the invite list">Remove</button>` : ''}</td>
+    </tr>`;
+  }).join('');
 }
-/** a task's parts (0..1) for the hover text of its score */
-function partsText(p) {
-  if (!p) return '';
-  return ['completion', 'speed', 'precision', 'economy'].filter(k => p[k] !== null && p[k] !== undefined)
-    .map(k => `${k} ${Math.round(p[k] * 100)}`).join(' · ');
-}
-function sortBy(k) {
-  sortDir = sortKey === k ? -sortDir : -1;
-  sortKey = k;
-  render();
-}
-document.querySelectorAll('th[data-k]').forEach(th => th.onclick = () => sortBy(th.dataset.k));
-async function retake(code) {
-  if (!confirm(`Let ${code} take the test again? Their current attempt is kept in its folder, renamed.`)) return;
-  await fetch(`/admin/reset/${code}`, { method: 'POST' });
-  load();
-}
-$('makeBatch').onclick = async () => {
-  const r = await fetch('/admin/batch', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: $('batchName').value, n: +$('batchN').value }) });
+
+document.querySelectorAll('th[data-k]').forEach(th => th.onclick = () => {
+  sortDir = sortKey === th.dataset.k ? -sortDir : (th.dataset.k === 'name' || th.dataset.k === 'job' || th.dataset.k === 'verdict_rank' ? 1 : -1);
+  sortKey = th.dataset.k; render();
+});
+$('statusChips').onclick = (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  statusFilter = b.dataset.s;
+  $('statusChips').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); render();
+};
+$('search').oninput = render; $('verdictFilter').onchange = render; $('showTests').onchange = render;
+$('rows').onclick = async (e) => {
+  const rt = e.target.closest('[data-retake]'), un = e.target.closest('[data-uninvite]');
+  if (rt) {
+    e.stopPropagation();
+    const r = data.candidates.find(x => x.code === rt.dataset.retake) || {};
+    if (!confirm(`Let ${r.name || r.email} take the test again? Their current attempt is kept (in the report and its folder).`)) return;
+    await fetch(`/admin/reset/${rt.dataset.retake}`, { method: 'POST' }); return load();
+  }
+  if (un) {
+    e.stopPropagation();
+    if (!confirm(`Remove ${un.dataset.uninvite} from the invite list?`)) return;
+    await fetch(`/admin/invites/delete/${encodeURIComponent(un.dataset.uninvite)}`, { method: 'POST' }); return load();
+  }
+  const tr = e.target.closest('tr.link');
+  if (tr && !e.target.closest('a,button')) location.href = `/admin/report/${tr.dataset.code}`;
+};
+// tabs
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x === t));
+  $('tab-people').classList.toggle('hidden', t.dataset.tab !== 'people');
+  $('tab-settings').classList.toggle('hidden', t.dataset.tab !== 'settings');
+});
+$('copyLink').onclick = async () => { try { await navigator.clipboard.writeText($('publicUrl').textContent); $('copyLink').textContent = 'Copied'; } catch (e) {}
+  setTimeout(() => $('copyLink').textContent = 'Copy', 1500); };
+// import
+$('importBtn').onclick = () => { $('importModal').classList.remove('hidden'); $('importPreview').innerHTML = ''; $('importText').focus(); };
+$('importCancel').onclick = () => $('importModal').classList.add('hidden');
+$('importFile').onchange = async (e) => { const f = e.target.files[0]; if (f) { $('importText').value = await f.text(); preview(); } };
+let pvTimer = null;
+$('importText').oninput = () => { clearTimeout(pvTimer); pvTimer = setTimeout(preview, 300); };
+async function preview() {
+  if (!$('importText').value.trim()) { $('importPreview').innerHTML = ''; return; }
+  const r = await fetch('/admin/invites', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: $('importText').value, dry: true }) });
   const j = await r.json();
-  const base = data.public_url || '(public address)';
-  $('codes').textContent = 'New invite links (send one to each candidate; each works once):\n' +
-    j.codes.map(c => `${base}/?code=${c}`).join('\n');
+  $('importPreview').innerHTML = `<b>${j.people.length}</b> people found` + (j.problems.length ? `, <span class="warn">${j.problems.length} lines skipped</span>` : '')
+    + `<table>${j.people.slice(0, 8).map(p => `<tr><td>${esc(p.name)}</td><td>${esc(p.email)}</td><td>${esc(p.invited_at)}</td><td>${esc(p.job)}</td></tr>`).join('')}</table>`
+    + (j.people.length > 8 ? `<div class="muted">… and ${j.people.length - 8} more</div>` : '')
+    + (j.problems.length ? `<div class="warn">${j.problems.slice(0, 5).map(esc).join('<br>')}</div>` : '');
+}
+$('importGo').onclick = async () => {
+  clearTimeout(pvTimer);                                   // (a preview still queued would overwrite the result)
+  if (!$('importText').value.trim()) return;
+  const r = await fetch('/admin/invites', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: $('importText').value }) });
+  const j = await r.json();
+  $('importPreview').innerHTML = `Imported: <b>${j.added}</b> new, <b>${j.updated}</b> updated.` + (j.problems.length ? ` <span class="warn">${j.problems.length} lines skipped.</span>` : '');
+  $('importText').value = '';
   load();
 };
-$('makeTest').onclick = async () => {
-  const only = $('onlyPart').value;
-  const r = await fetch('/admin/batch', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: 'Testing', n: 1, only }) });
-  if (!r.ok) { $('testLink').textContent = await r.text(); return; }
-  const j = await r.json();
-  const base = data.public_url || '(public address)';
-  $('testLink').innerHTML = `Test link (${only} only): <a style="color:#8bf" href="${base}/?code=${j.codes[0]}">${base}/?code=${j.codes[0]}</a>`;
-  load();
-};
+// settings
 $('saveSettings').onclick = async () => {
   const r = await fetch('/admin/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pass_mark: +$('passScore').value,
-                           must_complete: [...document.querySelectorAll('.must:checked')].map(x => x.value) }) });
+    body: JSON.stringify({ pass_mark: +$('passScore').value, must_complete: [...document.querySelectorAll('.must:checked')].map(x => x.value) }) });
   $('saved').textContent = r.ok ? 'saved' : 'not saved: ' + await r.text();
   setTimeout(() => $('saved').textContent = '', r.ok ? 1500 : 8000);
-  load();
+};
+async function saveLobby() {
+  const r = await fetch('/admin/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ accepting: $('accepting').checked, max_concurrent: +$('maxConc').value }) });
+  $('savedLobby').textContent = r.ok ? 'saved' : 'not saved: ' + await r.text();
+  setTimeout(() => $('savedLobby').textContent = '', 1500);
+}
+$('accepting').onchange = saveLobby; $('saveLobby').onclick = saveLobby;
+$('makeTest').onclick = () => {
+  const url = `${data.public_url || location.origin}${data.test_path}?only=${encodeURIComponent($('onlyPart').value)}`;
+  $('partLink').innerHTML = `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a>`;
 };
 load();
-setInterval(load, 3000);
+setInterval(() => { if (document.visibilityState === 'visible') load(); }, 4000);
 </script>
 </body>
 </html>

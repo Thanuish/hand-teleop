@@ -543,6 +543,12 @@ def make_app(sim: TeleopSim) -> web.Application:
                     else:
                         for s in S.SIDES:
                             sim.arms.start_homing(s)
+                elif t == "task_ready":       # the candidate read the task's description: start it
+                    if sim.task_game is not None and hasattr(sim.task_game, "task_ready"):
+                        sim.task_game.task_ready()
+                elif t == "end_task":         # the candidate ends the task early: "skip" or "finish"
+                    if sim.task_game is not None and hasattr(sim.task_game, "end_task"):
+                        sim.task_game.end_task(str(data.get("how", "finish")))
                 elif t == "cmd" and sim.task_game is None:   # a candidate can't reset a task game
                     try:
                         sim.command(data.get("cmd", ""))

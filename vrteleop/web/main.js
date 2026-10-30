@@ -27,6 +27,18 @@ function applyBudget() {
   renderer.setSize(window.innerWidth, window.innerHeight);
 }
 applyBudget();
+// The graphics chip reset (a context loss: too much at once, a driver hiccup): three.js restores
+// the context by itself; then draw lightly (pixels and frames down), so an overloaded chip
+// recovers instead of resetting again (the browser blocks WebGL for the page after a few).
+// Pages hear of it through 'teleop-context-lost' / 'teleop-context-restored'.
+renderer.domElement.addEventListener('webglcontextlost', () => {
+  Object.assign(BUDGET, { maxPixels: Math.min(BUDGET.maxPixels, 1.0e6), maxFps: Math.min(BUDGET.maxFps, 30) });
+  window.dispatchEvent(new CustomEvent('teleop-context-lost'));
+});
+renderer.domElement.addEventListener('webglcontextrestored', () => {
+  applyBudget();
+  window.dispatchEvent(new CustomEvent('teleop-context-restored'));
+});
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;   // photographic highlight roll-off
 renderer.toneMappingExposure = 1.0;
@@ -433,23 +445,11 @@ function connect() {
     const flags = f[1], nb = f[2];
     if (nb !== bodyObjs.length) return;
     let k = 4;
-    // robot poses: shown interpolated between the last two packets (smoothBodies), so the arms
-    // move smoothly at the headset's frame rate however often the server sends
-    const now = performance.now();
-    if (!bodyPose.cur || bodyPose.cur.length !== 7 * nb) {
-      bodyPose.prev = f.slice(k, k + 7 * nb); bodyPose.cur = bodyPose.prev.slice();
-    } else {
-      bodyPose.prev.set(bodyPose.cur); bodyPose.cur.set(f.subarray(k, k + 7 * nb));
-      const gap = Math.min(Math.max(now - bodyPose.t, 4), 120);
-      bodyPose.interval += 0.2 * (gap - bodyPose.interval);
-    }
-    bodyPose.t = now;
+    // robot poses (and the targets): into the playout buffer, timed by the simulator's clock
+    // (smoothBodies draws a little behind the newest, between two real poses)
+    playoutAdd(f[0], f.slice(k, k + 7 * nb + 14), nb);
     k += 7 * nb;
-    for (let a = 0; a < 2; a++, k += 7) {
-      targets[a].position.set(f[k], f[k + 1], f[k + 2]);
-      targets[a].quaternion.set(f[k + 4], f[k + 5], f[k + 6], f[k + 3]);
-      targets[a].visible = (flags & (1 << a)) !== 0;
-    }
+    for (let a = 0; a < 2; a++, k += 7) targets[a].visible = (flags & (1 << a)) !== 0;
     if (f.length >= k + 7) {           // operator (VR user) head pose, for the laptop mirror
       operatorLive = (flags & 8) !== 0;
       operatorHead.position.set(f[k], f[k + 1], f[k + 2]);
@@ -719,21 +719,44 @@ function handleXRInput() {
 }
 
 // -------------------------------------------------------------------- loop
-const bodyPose = { prev: null, cur: null, t: 0, interval: 11 };
+// The playout buffer: the last few pose packets with the simulator's time of each. The screen
+// draws PLAYOUT_DELAY behind the newest on the simulator's clock (mapped to this page's), always
+// between two real poses at an even pace: drawing by arrival time (two packets, the newest one
+// interval ahead) snapped forward when a packet came early and stalled when one was late
+// (packets bunch up on the way, and the simulator steps in bursts).
+const PLAYOUT_DELAY = 0.04;      // [s]
+const playout = { buf: [], off: null, nb: 0 };
+function playoutAdd(simT, poses, nb) {
+  const b = playout.buf, now = performance.now() / 1000;
+  if (nb !== playout.nb || (b.length && simT < b[b.length - 1].t - 0.05)) { b.length = 0; playout.off = null; }   // (a new scene, a reset)
+  playout.nb = nb;
+  if (b.length && simT <= b[b.length - 1].t) return;
+  b.push({ t: simT, p: poses });
+  if (b.length > 16) b.shift();
+  // the clock offset (this page's time - the simulator's): follows the earliest arrivals at once
+  // (the least delayed packets) and later ones slowly (the simulator running slower than real time)
+  const o = now - simT;
+  playout.off = playout.off === null || o < playout.off ? o : playout.off + 0.02 * (o - playout.off);
+}
 const _qa = new THREE.Quaternion(), _qb = new THREE.Quaternion();
 function smoothBodies() {
-  const { prev, cur } = bodyPose;
-  if (!cur || cur.length !== 7 * bodyObjs.length) return;
-  // one packet interval behind the newest pose: always between two real poses
-  const a = Math.min(1, (performance.now() - bodyPose.t) / bodyPose.interval);
-  for (let i = 0, k = 0; i < bodyObjs.length; i++, k += 7) {
-    const o = bodyObjs[i];
-    o.position.set(prev[k] + a * (cur[k] - prev[k]), prev[k + 1] + a * (cur[k + 1] - prev[k + 1]),
-      prev[k + 2] + a * (cur[k + 2] - prev[k + 2]));
-    _qa.set(prev[k + 4], prev[k + 5], prev[k + 6], prev[k + 3]);
-    _qb.set(cur[k + 4], cur[k + 5], cur[k + 6], cur[k + 3]);
+  const b = playout.buf, nb = bodyObjs.length;
+  if (!b.length || playout.nb !== nb) return;
+  const t = performance.now() / 1000 - playout.off - PLAYOUT_DELAY;
+  let i = b.length - 1;
+  while (i > 0 && b[i - 1].t > t) i--;
+  const A = i > 0 ? b[i - 1] : b[0], B = b[i];
+  const a = B.t > A.t ? Math.min(1, Math.max(0, (t - A.t) / (B.t - A.t))) : 1;
+  const draw = (o, k) => {
+    const P = A.p, Q = B.p;
+    o.position.set(P[k] + a * (Q[k] - P[k]), P[k + 1] + a * (Q[k + 1] - P[k + 1]), P[k + 2] + a * (Q[k + 2] - P[k + 2]));
+    _qa.set(P[k + 4], P[k + 5], P[k + 6], P[k + 3]);
+    _qb.set(Q[k + 4], Q[k + 5], Q[k + 6], Q[k + 3]);
     o.quaternion.slerpQuaternions(_qa, _qb, a);
-  }
+  };
+  for (let j = 0; j < nb; j++) draw(bodyObjs[j], 7 * j);
+  for (let j = 0; j < 2; j++) draw(targets[j], 7 * nb + 7 * j);
+  while (b.length > 2 && b[1].t < t) b.shift();                 // (poses already passed)
 }
 // page scripts can draw more after each frame (e.g. the screening monitor's side view)
 const afterRender = [];

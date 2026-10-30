@@ -38,7 +38,7 @@ mount = "floating"             # "floating": the gripper on its own, no arm (it 
 
 [controls]
 motion_scale = 1.0             # the robot moves this many cm per cm the phone moves
-hand_smoothing_s = 0.03       # the same for a hand tracked by a camera (it is smoothed on the device already: little here, less lag)
+hand_smoothing_s = 0.03        # the same for a hand tracked by a camera (critically damped: glides through its ~30 updates a second)
 hand_rotation_scale = 0.5      # ... and turns this much of the hand's turn (0.5: a 40 deg turn of the hand turns the gripper 20 deg)
 hand_motion_scale = 0.35       # a camera-tracked hand: the robot moves this many cm per cm of hand (slower = more precise, calmer)
 smoothing_s = 0.12             # smooths the phone's motion (it sends ~30 positions a second); higher =
@@ -66,13 +66,19 @@ grab_height = 0.06             # they turn green when the fingertips are this lo
 color = "#ffd24a"
 grab_color = "#4cd07d"
 
+[table_wall]                   # a low rim around the table top: balls and knocked blocks stay on the table
+enabled = true
+height = 0.04                  # [m]
+thickness = 0.015              # [m]
+
 [reach_target]                 # the glowing ball of the reach steps
 diameter = 0.044
 color = [0.2, 1.0, 0.4, 0.55]
 
 # ---------------------------------------------------------------------------- timing and checks
 [timing]
-countdown_s = 3.0              # countdown before each timed phase
+read_first = true              # each task's description first (the clock stopped) until the candidate presses Start
+countdown_s = 3.0              # then this countdown before the clock runs
 pair_hold_s = 1.0              # the phone must be connected this long before the test goes on
 
 [tolerances]
@@ -109,6 +115,19 @@ wrong_bin_penalty = 0.25       # each object put in a wrong bin takes this much 
 pass_mark = 50
 must_complete = []
 grades = { A = 85, B = 70, C = 55, D = 40 }   # the lowest overall score for each letter; below D: F
+
+[recommendation]               # the verdict on the admin page (TEST_TELEOP/recommend.py); tune once real candidates are in
+invite_skill = 70              # overall score for "Invite to interview"
+invite_skill_learner = 55      # ... or this score with a learning score of at least
+invite_learning = 65           # ... this (50 = no change during the test, 100 = 40 % faster)
+trainable_skill = 40           # "Trainable: consider": this score with a learning score of at least
+trainable_learning = 55        # ... this,
+consider_skill = 55            # ... or this score alone,
+trainable_skill_learner = 35   # ... or this lower score with a learning score of at least
+trainable_learning_strong = 65 # ... this (learning fast)
+retest_fps = 12                # "Retest suggested" (when below the invite score): tracked fewer times a second than this,
+retest_lost = 0.30             # ... or the hand lost more than this share of the time,
+retest_latency_ms = 300        # ... or a tracking delay above this
 
 [texts]                        # short messages between phases
 well_done = "Well done!"
@@ -319,25 +338,25 @@ color = [0.15, 0.8, 0.35]
 [markers.slot_big_square]
 kind = "slot"
 object = "big_square"
-pos = [0.60, 0.13]
+pos = [0.60, 0.16]
 symmetry_deg = 90
-margin = 0.006
+margin = 0.015                 # [m] room around the shape on each side
 color = [0.25, 0.25, 0.28]
 
 [markers.slot_small_square]
 kind = "slot"
 object = "small_square"
-pos = [0.60, 0.04]
+pos = [0.60, 0.05]
 symmetry_deg = 90
-margin = 0.006
+margin = 0.015
 color = [0.25, 0.25, 0.28]
 
 [markers.slot_bar]
 kind = "slot"
 object = "bar"
-pos = [0.60, -0.06]
+pos = [0.60, -0.07]
 symmetry_deg = 180
-margin = 0.006
+margin = 0.015
 color = [0.25, 0.25, 0.28]
 
 [markers.bin_red]
@@ -522,14 +541,14 @@ handle_length = 0.12
 key = "pair"
 kind = "pair"
 title = "Hand control"
-text = "Start the camera and follow the steps: your open hand drives the robot, a fist pauses it, a pinch grips (let go: open the fingers)."
+text = "Start the camera and follow the steps: your open hand drives the robot, a fist pauses it, a pinch closes the gripper and the next pinch opens it."
 
 [[phases]]
 key = "pick"
 title = "Practice: pick and place"
 scored = false
 time_limit_s = 180
-text = "Bring the open gripper down around the yellow cube, tap GRAB, lift it, put it into the green square and tap RELEASE. Turn your phone to turn the gripper."
+text = "Bring the open gripper down around the yellow cube (the ring under the gripper turns green when it is low enough), pinch to grip, lift it, put it into the green square and pinch again to let go. Q and E turn the gripper."
 objects = ["tut_cube"]
 markers = ["zone"]
 steps = [
@@ -543,7 +562,7 @@ scored = true
 time_limit_s = 300
 par_time_s = 90
 par_path_m = 3.5
-text = "Put each shape into its outline on the board. Turn the shapes to match."
+text = "Put each shape into its outline on the board. Turn the gripper with Q and E so the shapes match their outlines."
 objects = ["big_square", "small_square", "bar"]
 markers = ["slot_big_square", "slot_small_square", "slot_bar"]
 steps = [
@@ -569,25 +588,6 @@ steps = [
 ]
 
 [[phases]]
-key = "tilt"
-title = "Task 3: tilt and pour"
-scored = true
-time_limit_s = 420
-par_time_s = 150
-par_path_m = 3.5
-weight = 1.5                   # tilting and pouring (all six degrees of freedom) counts more
-rotation = "full"
-text = "Now the gripper also tilts and twists with your phone. Take the book out of its holder, turn it flat and lay it on the green mat. Then pour the balls from the cup into the bowl and set the cup down upright."
-objects = ["book", "cup", "ball"]
-markers = ["holder", "mat", "bowl"]
-steps = [
-  { id = "book_out", type = "remove_from", object = "book", holder = "holder", distance = 0.07, label = "book out of the holder" },
-  { id = "book_flat", type = "lay_flat", object = "book", zone = "mat", after = "book_out", label = "book flat on the mat" },
-  { id = "poured", type = "pour_into", objects = "ball", container = "bowl", count = 3, label = "balls in the bowl" },
-  { id = "cup_up", type = "set_upright", object = "cup", after = "poured", label = "cup upright again" },
-]
-
-[[phases]]
 key = "rings"
 title = "Ring on pegs"
 scored = true
@@ -597,7 +597,7 @@ weight = 1.5                   # six degrees of freedom: counts more
 rotation = "full"
 repeat = true                  # all three on their pegs: a new round (the rings back in their holders) until time is up
 target_rounds = 3              # 3 rounds (9 rings) score full marks
-text = "Hang each ring on the peg straight ahead of it, the same colour. The pegs lean at different angles: tilt the ring with your phone so the peg goes through the hole, then let go. When all three are on, they come back for the next round: as many rounds as you can."
+text = "Hang each ring on the peg of its colour. The pegs lean at different angles: tilt the ring with W S A D so the peg goes through the hole, then pinch to let go. When all three are on, they come back for the next round: as many rounds as you can."
 objects = ["ring_red", "ring_blue", "ring_green"]
 markers = ["ring_holder_red", "ring_holder_blue", "ring_holder_green", "peg_red", "peg_blue", "peg_green"]
 steps = [
@@ -613,7 +613,7 @@ scored = true
 time_limit_s = 240
 par_path_m = 10.0              # (for a tower of the target height; speed here = how high it got)
 rotation = "yaw"
-text = "Take each block from the yellow square and stack them on the wooden platform. Build as high as you can: lower each block gently onto the one below, then RELEASE. A new block appears when you take one."
+text = "Take each block from the yellow square and stack them on the wooden platform. Build as high as you can: lower each block gently onto the one below, then pinch to let go. A new block appears when you take one."
 objects = ["tower_block"]
 markers = ["tower_supply", "tower_platform"]
 steps = [{ type = "stack", objects = "tower_block", platform = "tower_platform", supply = "tower_supply", target_height = 0.25 }]

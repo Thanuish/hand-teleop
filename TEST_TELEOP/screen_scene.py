@@ -367,6 +367,21 @@ def _add_marker(wb, mk: C.Marker):
         g.friction = [1.0, 0.01, 0.001]
 
 
+def _add_table_wall(wb):
+    """[table_wall]: a low rim along the table top's four edges, so a ball (or a knocked block)
+    stays on the table instead of rolling off and out of reach."""
+    tw = CFG.table_wall
+    (cx, cy), (hx, hy) = S.TABLE_CENTER, S.TABLE_HALF
+    h, t = tw["height"] / 2, tw["thickness"] / 2
+    b = wb.add_body()
+    b.name = "screen_table_wall"
+    b.pos = [cx, cy, TABLE_Z]
+    for name, pos, size in (("front", [hx - t, 0, h], [t, hy, h]), ("back", [-hx + t, 0, h], [t, hy, h]),
+                            ("left", [0, hy - t, h], [hx, t, h]), ("right", [0, -hy + t, h], [hx, t, h])):
+        g = S._add_box(b, f"screen_table_wall_{name}", pos, size, [0.78, 0.8, 0.84, 1], material="aluminium")
+        g.friction = [0.6, 0.005, 0.0001]
+
+
 def add(spec: mujoco.MjSpec):
     """Add the objects, markers and the reach target to the scene; hide the unused arm."""
     _hide_other_arm(spec)
@@ -375,6 +390,8 @@ def add(spec: mujoco.MjSpec):
         _hide_arm(spec, f"{CFG.arm.side}_")
         _add_floating_gripper(spec)
     wb = spec.worldbody
+    if CFG.table_wall["enabled"]:
+        _add_table_wall(wb)
     for m in CFG.materials.values():
         T.add_material(spec, _mat(m.name), m.texture, rgba=m.rgba, specular=m.specular, shininess=m.shininess,
                        reflectance=m.reflectance, roughness=m.roughness, metallic=m.metallic)

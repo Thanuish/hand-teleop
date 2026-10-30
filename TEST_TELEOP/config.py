@@ -158,6 +158,7 @@ class Config:
     view: dict                   # eye, look, fov (MuJoCo frame, as main.js wants it)
     depth_cues: dict
     table_wall: dict             # a low rim around the table top (balls don't roll off): enabled, height, thickness
+    recommendation: dict         # the verdict's thresholds (recommend.py DEFAULTS)
     timing: dict
     tol: dict
     scoring: dict
@@ -350,7 +351,7 @@ def set_values(updates: dict, p: Path | str | None = None) -> Config:
 
 def parse(raw: dict, p: Path | str = "<config>") -> Config:
     c = _Checker()
-    c.keys(raw, "file", ("version", "arm", "controls", "view", "side_view", "depth_cues", "table_wall", "timing", "tolerances",
+    c.keys(raw, "file", ("version", "arm", "controls", "view", "side_view", "depth_cues", "table_wall", "recommendation", "timing", "tolerances",
                          "scoring", "texts", "reach_target", "materials", "objects", "markers", "phases"),
            required=("arm", "objects", "phases"))
     if raw.get("version", 1) != 1:
@@ -401,6 +402,10 @@ def parse(raw: dict, p: Path | str = "<config>") -> Config:
                         fov=c.num(sv, "fov_deg", "side_view", 35, lo=10, hi=100))
     if view["eye"] == view["look"]:
         c.err("view", "eye and look_at are the same point")
+    from .recommend import DEFAULTS as REC
+    rc = raw.get("recommendation", {})
+    c.keys(rc, "recommendation", tuple(REC))
+    recommendation = {k: float(c.num(rc, k, "recommendation", dv, lo=0, hi=1000)) for k, dv in REC.items()}
     tw = raw.get("table_wall", {})
     c.keys(tw, "table_wall", ("enabled", "height", "thickness"))
     table_wall = dict(enabled=c.flag(tw, "enabled", "table_wall", True),
@@ -746,7 +751,7 @@ def parse(raw: dict, p: Path | str = "<config>") -> Config:
         raise ConfigError(p, c.problems)
     return Config(path=Path(p), arm=arm, motion_scale=motion_scale, smoothing=smoothing, hand_smoothing=hand_smoothing, hand_motion_scale=hand_motion_scale,
                   hand_rotation_scale=hand_rotation_scale,
-                  view=view, depth_cues=depth_cues, table_wall=table_wall,
+                  view=view, depth_cues=depth_cues, table_wall=table_wall, recommendation=recommendation,
                   timing=timing, tol=tol, scoring=scoring, texts=texts, reach_target=reach_target,
                   materials=materials, objects=objects, groups=groups, markers=markers, phases=phases)
 

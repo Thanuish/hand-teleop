@@ -116,6 +116,19 @@ pass_mark = 50
 must_complete = []
 grades = { A = 85, B = 70, C = 55, D = 40 }   # the lowest overall score for each letter; below D: F
 
+[recommendation]               # the verdict on the admin page (TEST_TELEOP/recommend.py); tune once real candidates are in
+invite_skill = 70              # overall score for "Invite to interview"
+invite_skill_learner = 55      # ... or this score with a learning score of at least
+invite_learning = 65           # ... this (50 = no change during the test, 100 = 40 % faster)
+trainable_skill = 40           # "Trainable: consider": this score with a learning score of at least
+trainable_learning = 55        # ... this,
+consider_skill = 55            # ... or this score alone,
+trainable_skill_learner = 35   # ... or this lower score with a learning score of at least
+trainable_learning_strong = 65 # ... this (learning fast)
+retest_fps = 12                # "Retest suggested" (when below the invite score): tracked fewer times a second than this,
+retest_lost = 0.30             # ... or the hand lost more than this share of the time,
+retest_latency_ms = 300        # ... or a tracking delay above this
+
 [texts]                        # short messages between phases
 well_done = "Well done!"
 time_up = "Time is up."

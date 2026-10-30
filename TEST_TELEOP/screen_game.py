@@ -496,6 +496,8 @@ class ScreenGame:
         if cmd >= 0.5 > self._prev_cmd and self.wire is None:
             mt["grasp_attempts"] += 1
             self._attempt_credited = False           # this attempt can count one grasp
+            if self.t0 is not None:                  # (timed: the learning curve's attempts per grasp, recommend.py)
+                mt.setdefault("events", []).append([round(d.time - self.t0, 2), "attempt"])
         self._prev_cmd = cmd
         if d.time < self._next_check:
             return

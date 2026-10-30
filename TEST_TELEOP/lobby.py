@@ -46,6 +46,7 @@ from aiohttp import WSMsgType, web
 from vrteleop import scene as S
 
 from . import config as C
+from . import recommend as R
 from . import tracker
 
 ROOT = S.ROOT
@@ -136,7 +137,11 @@ def _db() -> sqlite3.Connection:
             CREATE INDEX IF NOT EXISTS candidates_email ON candidates(email);
             -- one attempt per email; an admin's "Allow retake" marks the old one 'reset'
             CREATE UNIQUE INDEX IF NOT EXISTS candidates_email_live ON candidates(email)
-                WHERE email IS NOT NULL AND status != 'reset';""")
+                WHERE email IS NOT NULL AND status != 'reset';
+            -- the people invited (imported from Ashby on the admin page): matched to attempts by email
+            CREATE TABLE IF NOT EXISTS invites (
+                email TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', job TEXT NOT NULL DEFAULT '',
+                invited_at TEXT, imported_at TEXT);""")
         _migrate_json(con)
         _db_ready.add(DB)
     return con
@@ -207,6 +212,100 @@ def new_candidate(batch: str, name: str = "", email: str | None = None, only: st
                     "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)",
                     (code, email, name, batch, now, status, now if status == "playing" else None, only or None))
     return code
+
+
+def invites() -> dict:
+    """email -> {name, job, invited_at, imported_at}."""
+    with closing(_db()) as con:
+        return {r["email"]: dict(name=r["name"], job=r["job"], invited_at=r["invited_at"], imported_at=r["imported_at"])
+                for r in con.execute("SELECT * FROM invites")}
+
+
+def save_invites(people: list[dict]) -> tuple[int, int]:
+    """Add or update invited people (email, name, job, invited_at). Returns (added, updated)."""
+    now = time.strftime("%Y-%m-%d %H:%M")
+    added = updated = 0
+    with closing(_db()) as con, con:
+        for p in people:
+            old = con.execute("SELECT 1 FROM invites WHERE email = ?", (p["email"],)).fetchone()
+            con.execute("INSERT INTO invites (email, name, job, invited_at, imported_at) VALUES (?, ?, ?, ?, ?) "
+                        "ON CONFLICT(email) DO UPDATE SET name = excluded.name, job = excluded.job, "
+                        "invited_at = excluded.invited_at, imported_at = excluded.imported_at",
+                        (p["email"], p.get("name", ""), p.get("job", ""), p.get("invited_at"), now))
+            added += old is None
+            updated += old is not None
+    return added, updated
+
+
+def delete_invite(email: str):
+    with closing(_db()) as con, con:
+        con.execute("DELETE FROM invites WHERE email = ?", (email,))
+
+
+_DATE_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ",
+                 "%Y-%m-%d", "%d.%m.%Y %H:%M", "%d.%m.%Y", "%d/%m/%Y %H:%M", "%d/%m/%Y", "%m/%d/%Y %H:%M", "%m/%d/%Y",
+                 "%b %d, %Y", "%d %b %Y", "%B %d, %Y")
+
+
+def _date(s: str) -> str | None:
+    """A date as Ashby (or a person) writes it -> 'YYYY-MM-DD HH:MM'; None if it isn't one."""
+    import datetime as dt
+    s = (s or "").strip()
+    for f in _DATE_FORMATS:
+        try:
+            return dt.datetime.strptime(s, f).strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            pass
+    return None
+
+
+def parse_invites(text: str) -> tuple[list[dict], list[str]]:
+    """People from a pasted list or an Ashby CSV export: one per line, comma / tab / semicolon
+    separated. With a header row, its columns are found by name (name / first + last name,
+    email, a date: invited / sent / date, job / role / position); without one, the email is
+    whatever looks like one, the date whatever parses as one, the name the first other cell.
+    Returns (people, problems)."""
+    lines = [l for l in text.replace("\r\n", "\n").split("\n") if l.strip()]
+    if not lines:
+        return [], ["Nothing to import."]
+    try:
+        dialect = csv.Sniffer().sniff("\n".join(lines[:20]), delimiters=",\t;")
+    except csv.Error:
+        dialect = csv.excel
+    rows = list(csv.reader(lines, dialect))
+    head = [h.strip().lower() for h in rows[0]]
+    # (a header word at a word's start: "Candidate Name" is no date column)
+    col = lambda *words: next((i for i, h in enumerate(head) if any(re.search(r"\b" + w, h) for w in words)), None)
+    has_header = not any(EMAIL_RE.fullmatch(c.strip().lower()) for c in rows[0]) and col("email", "e-mail", "mail") is not None
+    people, problems, seen = [], [], set()
+    if has_header:
+        ie, i_name, i_first, i_last = col("email", "e-mail", "mail"), col("full name", "candidate name"), col("first"), col("last")
+        i_name = i_name if i_name is not None else next((i for i, h in enumerate(head) if h == "name"), None)
+        i_date, i_job = col("invit", "sent", "date", "created", "activity", "applied"), col("job", "role", "position", "posting")
+    else:                                   # (a pasted list: each line split on its own, tabs, commas or semicolons)
+        rows = [re.split(r"[\t;,]", l) for l in lines]
+    for n, r in enumerate(rows[1:] if has_header else rows, start=2 if has_header else 1):
+        cells = [c.strip() for c in r]
+        get = lambda i: cells[i] if i is not None and i < len(cells) else ""
+        if has_header:
+            email = get(ie).lower()
+            name = get(i_name) or " ".join(x for x in (get(i_first), get(i_last)) if x)
+            when, job = _date(get(i_date)), get(i_job)
+        else:
+            email = next((c.lower() for c in cells if EMAIL_RE.fullmatch(c.lower())), "")
+            others = [c for c in cells if c.lower() != email]
+            when = next((d for d in map(_date, others) if d), None)
+            name = next((c for c in others if c and not _date(c)), "")
+            job = ""
+        if not EMAIL_RE.fullmatch(email):
+            problems.append(f"line {n}: no email address")
+            continue
+        if email in seen:
+            continue
+        seen.add(email)
+        people.append(dict(email=email, name=" ".join(name.split())[:80], job=job[:80],
+                           invited_at=when or time.strftime("%Y-%m-%d %H:%M")))
+    return people, problems
 
 
 def test_token() -> str:
@@ -658,53 +757,146 @@ def make_app(args) -> web.Application:
     async def admin(_):
         return web.FileResponse(TEST_WEB / "admin.html", headers={"Cache-Control": "no-store"})
 
-    def rows():
+    rec_cache: dict[str, tuple] = {}
+
+    def recommendation(code: str, cand: dict, res: dict | None) -> dict:
+        """recommend.py's verdict for an attempt (cached until its results change; a test still
+        running gets none yet)."""
+        if res is None or cand["status"] == "playing":
+            return {}
+        folder = session_dir(code, cand) / "screen" / "attempt"
+        rp = folder / "results.json"
+        key = (rp.stat().st_mtime if rp.exists() else 0, id(cfg()))
+        hit = rec_cache.get(code)
+        if hit and hit[0] == key:
+            return hit[1]
         c = cfg()
-        practice = [p.key for p in c.task_phases if not p.scored]
+        r = R.recommend(res, R.quality(folder / "hand_tracking.jsonl"), c.scored_phases, c.recommendation)
+        rec_cache[code] = (key, r)
+        return r
+
+    def rows():
+        """One row per person: an invite (imported from Ashby) and/or their attempts (the latest
+        one's results; earlier ones an admin reset are counted); a test run is a row of its own."""
+        c = cfg()
+        inv = invites()
+        by_email: dict[str, list] = {}
         out = []
         for code, cand in candidates().items():
-            res = results_of(code, cand)
-            sc = (res or {}).get("scores", {})
-            mt = (res or {}).get("metrics", {})
-            r = {"code": code, "batch": cand["batch"], "name": cand.get("name", ""), "email": cand.get("email") or "",
-                 "status": cand["status"],
-                 "phase": (res or {}).get("phase"), "started": cand.get("started"),
-                 "finished": cand.get("finished") or (res or {}).get("finished_at"),
-                 "practice_done": all(mt.get(k, {}).get("completed") for k in practice),
-                 "reach_efficiency": sc.get("reach_efficiency")}
-            bd = sc.get("breakdown", {})
-            for p in c.scored_phases:           # a score and steps column per scored task (its parts on hover)
-                r[p.key] = sc.get(p.key)
-                r[f"{p.key}_steps"] = f"{mt[p.key]['steps_done']}/{mt[p.key]['steps_total']}" if p.key in mt else ""
-                ended = mt.get(p.key, {}).get("ended_by")          # (the candidate skipped / finished it early)
-                if ended:
-                    r[f"{p.key}_steps"] += " skipped" if ended == "skip" else " finished early"
-                r[f"{p.key}_parts"] = bd.get(p.key)
-            skills = sc.get("skills") or {}
-            for k in ("completion", "speed", "precision", "economy"):
-                r[k] = skills.get(k)
-            r.update({"overall": sc.get("overall"), "grade": sc.get("grade"), "pass": passed(res), "config": (res or {}).get("config_sha"),
-                      "folder": _rel(session_dir(code, cand)),
-                      "running": code in workers and workers[code].alive(), "only": cand.get("only")})
-            out.append(r)
+            if cand.get("email"):
+                by_email.setdefault(cand["email"], []).append((code, cand))
+            else:
+                out.append(row(code, cand, [(code, cand)], None, c))
+        for email in set(inv) | set(by_email):
+            att = by_email.get(email, [])
+            live = [a for a in att if a[1]["status"] != "reset"]
+            latest = max(live or att, key=lambda a: a[1]["created"] or "") if att else None
+            out.append(row(*(latest or (None, None)), att, inv.get(email), c, email=email))
         return out
+
+    def row(code, cand, attempts, invite, c, email=None):
+        r = {"id": email or code, "code": code, "email": email or "", "test_run": email is None,
+             "invited": invite is not None, "name": (invite or {}).get("name") or (cand or {}).get("name", ""),
+             "job": (invite or {}).get("job", ""), "invited_at": (invite or {}).get("invited_at"),
+             "attempts": len(attempts), "status": cand["status"] if cand else "invited"}
+        if cand is None:
+            return r
+        res = results_of(code, cand)
+        sc, mt = (res or {}).get("scores", {}), (res or {}).get("metrics", {})
+        rec = recommendation(code, cand, res)
+        q = rec.get("quality") or {}
+        r.update({"started": cand.get("started"), "finished": cand.get("finished") or (res or {}).get("finished_at"),
+                  "phase": (res or {}).get("phase"), "only": cand.get("only"), "batch": cand["batch"],
+                  "running": code in workers and workers[code].alive(),
+                  "overall": sc.get("overall"), "grade": sc.get("grade"), "pass": passed(res),
+                  "verdict": rec.get("verdict"), "verdict_label": rec.get("label"),
+                  "learning": (rec.get("learning") or {}).get("score"), "tech": rec.get("technical") or [],
+                  "summary": (rec.get("reasons") or [""])[0], "fps": q.get("fps"),
+                  "skipped": len(rec.get("skipped") or [])})
+        for k in ("completion", "speed", "precision", "economy"):
+            r[k] = (sc.get("skills") or {}).get(k)
+        for p in c.scored_phases:
+            r[p.key] = sc.get(p.key)
+        return r
 
     async def admin_api(_):
         c = cfg()
         return web.json_response({"settings": settings(), "candidates": rows(), "config": c.public(),
                                   "config_path": _rel(c.path), "config_error": _cfg_state["error"],
                                   "public_url": public_url(), "tunnel": bool(args.tunnel),
-                                  "test_path": f"/t/{test_token()}"})
+                                  "test_path": f"/t/{test_token()}", "verdicts": R.VERDICTS})
 
     async def admin_csv(_):
         buf = io.StringIO()
-        r = [{k: v for k, v in row.items() if not k.endswith("_parts")} for row in rows()]   # (the parts: the page's hover)
-        if r:
-            wr = csv.DictWriter(buf, fieldnames=list(r[0]))
-            wr.writeheader()
-            wr.writerows(r)
+        cols = ["name", "email", "job", "invited", "invited_at", "status", "attempts", "started", "finished", "overall", "grade",
+                "verdict_label", "learning", "completion", "speed", "precision", "economy", "fps", "skipped", "summary"]
+        cols += [p.key for p in cfg().scored_phases]
+        wr = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+        wr.writeheader()
+        wr.writerows(r for r in rows() if not r["test_run"])
         return web.Response(text=buf.getvalue(), content_type="text/csv",
                             headers={"Content-Disposition": 'attachment; filename="screening_results.csv"'})
+
+    async def admin_report_page(_):
+        return web.FileResponse(TEST_WEB / "admin_report.html", headers={"Cache-Control": "no-store"})
+
+    async def admin_report(request):
+        """Everything about one attempt: the person, all their attempts, the scores per task, the
+        recommendation with its reasons and learning curve, the tracking quality, the files."""
+        code, cand = lookup(request.match_info["code"])
+        if cand is None:
+            raise web.HTTPNotFound()
+        c = cfg()
+        res = results_of(code, cand)
+        rec = recommendation(code, cand, res) if res else {}
+        inv = invites().get(cand["email"]) if cand.get("email") else None
+        others = [dict(code=k, status=v["status"], started=v["started"], finished=v["finished"],
+                       overall=((results_of(k, v) or {}).get("scores") or {}).get("overall"))
+                  for k, v in candidates().items() if cand.get("email") and v.get("email") == cand["email"]]
+        folder = session_dir(code, cand)
+        files = sorted((dict(path=str(p.relative_to(folder)).replace("\\", "/"), size=p.stat().st_size)
+                        for p in folder.rglob("*") if p.is_file() and p.name != "quality.json"),
+                       key=lambda f: f["path"]) if folder.exists() else []
+        tasks = []
+        m, sc = (res or {}).get("metrics", {}), (res or {}).get("scores", {})
+        for p in c.task_phases:
+            if p.key in m:
+                mt = m[p.key]
+                tasks.append(dict(key=p.key, title=p.title, scored=p.scored, score=sc.get(p.key),
+                                  parts=(sc.get("breakdown") or {}).get(p.key), time_s=mt.get("time_s"), limit=p.limit,
+                                  steps=f"{round(mt.get('steps_done') or 0, 2):g}/{mt.get('steps_total')}", completed=mt.get("completed"),
+                                  ended_by=mt.get("ended_by"), grasps=mt.get("grasps"), attempts=mt.get("grasp_attempts"),
+                                  drops=mt.get("drops"), path_m=round(mt.get("path_m") or 0, 2), homes=mt.get("homes", 0)))
+        return web.json_response({
+            "code": code, "candidate": cand, "invite": inv, "attempts": others, "results_at": (res or {}).get("finished_at"),
+            "scores": {k: v for k, v in sc.items() if k != "breakdown"}, "tasks": tasks, "pass": passed(res),
+            "recommendation": {k: v for k, v in rec.items() if k != "quality"}, "quality": rec.get("quality"),
+            "files": files, "running": code in workers and workers[code].alive(), "thresholds": c.recommendation})
+
+    async def admin_file(request):
+        """A file of an attempt's folder (results, recordings, logs), for download."""
+        code, cand = lookup(request.match_info["code"])
+        if cand is None:
+            raise web.HTTPNotFound()
+        folder = session_dir(code, cand).resolve()
+        p = (folder / request.match_info["path"]).resolve()
+        if folder not in p.parents or not p.is_file():          # (nothing outside the attempt's folder)
+            raise web.HTTPNotFound()
+        return web.FileResponse(p, headers={"Content-Disposition": f'attachment; filename="{code}_{p.name}"'})
+
+    async def admin_invites(request):
+        """Import invited people: {text} (a pasted list or an Ashby CSV export). {dry: true}
+        only reads them (the page shows what would be imported)."""
+        body = await request.json()
+        people, problems = parse_invites(str(body.get("text", "")))
+        if body.get("dry"):
+            return web.json_response({"people": people, "problems": problems})
+        added, updated = save_invites(people)
+        return web.json_response({"added": added, "updated": updated, "problems": problems})
+
+    async def admin_invite_delete(request):
+        delete_invite(request.match_info["email"].lower())
+        return web.json_response({"ok": True})
 
     async def admin_settings(request):
         """Lobby settings (settings.json) and the pass rule, which lives in the test's
@@ -759,6 +951,11 @@ def make_app(args) -> web.Application:
     app.router.add_get("/admin/results.csv", local_only(admin_csv))
     app.router.add_post("/admin/settings", local_only(admin_settings))
     app.router.add_post("/admin/reset/{code}", local_only(admin_reset))
+    app.router.add_get("/admin/report/{code}", local_only(admin_report_page))
+    app.router.add_get("/admin/api/report/{code}", local_only(admin_report))
+    app.router.add_get("/admin/file/{code}/{path:.+}", local_only(admin_file))
+    app.router.add_post("/admin/invites", local_only(admin_invites))
+    app.router.add_post("/admin/invites/delete/{email}", local_only(admin_invite_delete))
     app.router.add_static("/static/", WEB_DIR)
     app.router.add_static("/test-static/", TEST_WEB)
     return app

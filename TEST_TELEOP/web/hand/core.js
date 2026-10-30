@@ -44,6 +44,26 @@ export const POSE_MODEL = 'https://storage.googleapis.com/mediapipe-models/pose_
 import { solveHandPose, PalmModel, PALM_IDS, forearm, ForearmFusion, OneEuroRot, BacklashRot, solveWristPosition,
          estimateHfov, HandShape, fingerShape, GraspStabilizer, hfovOf, focalOf } from './pose3d.js';
 
+/** The part of the camera picture the hand must stay in (image 0..1): near its edges MediaPipe
+ *  loses fingers and the pose jumps. The hand within `margin` of the edge is "near" (a warning);
+ *  more than `outPoints` of its 21 points outside is "out" (the robot pauses, like a fist).
+ *  palm: the wrist -> middle knuckle length as a share of the picture's width, the right range
+ *  for an arm's length from the camera (shorter: too far, longer: too close). */
+export const HAND_BOX = { x0: 0.1, y0: 0.06, x1: 0.9, y1: 0.94, margin: 0.04, outPoints: 3, palm: [0.09, 0.24] };
+
+/** where the hand is against HAND_BOX: {inside, near, out, palm (its size), fit: 'far' | 'close' | 'ok'} */
+export function boxState(lm, W, H) {
+  const B = HAND_BOX;
+  let outside = 0, near = false;
+  for (const p of lm) {
+    if (p.x < B.x0 || p.x > B.x1 || p.y < B.y0 || p.y > B.y1) outside++;
+    else if (p.x < B.x0 + B.margin || p.x > B.x1 - B.margin || p.y < B.y0 + B.margin || p.y > B.y1 - B.margin) near = true;
+  }
+  const palm = Math.hypot(lm[9].x - lm[0].x, (lm[9].y - lm[0].y) * H / W);
+  return { inside: outside === 0, near: near || outside > 0, out: outside > B.outPoints, palm,
+           fit: palm < B.palm[0] ? 'far' : palm > B.palm[1] ? 'close' : 'ok' };
+}
+
 export const SETTINGS = {
   hfov: 60,                    // [deg] the camera's field of view until it is estimated (an error only scales the motion a little)
   hfovRange: [45, 90],         // [deg] the estimate is kept within this (OAT's self-calibration: rough)
@@ -56,7 +76,10 @@ export const SETTINGS = {
   pinchFrames: 3,              // gripMode 'pinchToggle': a pinch counts once seen this many frames in a row
   // One Euro filter (adaptive: steady when the hand is still, little lag when it moves)
   pos: { minCutoff: 0.45, beta: 5, dCutoff: 1.0 },    // position [m]
-  depth: { minCutoff: 0.15, beta: 4.0, dCutoff: 1.0 },  // distance from the camera (the noisiest) [m] (beta 4: opens up sooner when the hand moves)
+  // distance from the camera (the noisiest) [m]. beta 1.5 and a calm speed estimate (dCutoff
+  // 0.5): with beta 4 the depth noise itself opened the filter up (replayed real sessions,
+  // scripts/replay_hand.mjs: the robot's roughness while moving -31 %, a still hand's wander -80 %)
+  depth: { minCutoff: 0.15, beta: 1.5, dCutoff: 0.5 },
   rot: { minCutoff: 0.5, beta: 0.4, dCutoff: 1.0 },    // orientation (per rad/s)
   refDepth: { minCutoff: 0.15, beta: 0.5, dCutoff: 1.0 },   // the reference distance that scales left/right and up/down
   // a dead band ("backlash") after the filters: while the hand stays within this of where the
@@ -77,7 +100,10 @@ export const SETTINGS = {
   // carries on as soon as the hand is back (re-anchored there: no jump), instead of stopping and
   // settling again (on a real session the hand was lost on a third of the frames, mostly briefly)
   holdLost: 0.3,               // [s]
-  lead: 0.05,                  // [s] the position output this far ahead along the hand's speed (the filters lag ~70-100 ms)
+  // [s] the position output this far ahead along the hand's speed (makes up for the filters' lag).
+  // Off: on real sessions it amplified the tracking noise (a third of the roughness while moving);
+  // the ghost gripper shows where the robot is going without delay instead
+  lead: 0,
   depthMedian: 5,              // [frames] the distance: the median of this many (a wrong frame or two ignored)
   depthSpeed: 0.8,             // [m/s] ... and changing at most this fast (a hand toward / away from the camera)
   leadSmooth: 0.4,             // (the speed for it: a running mean, this share of each new frame)
@@ -387,6 +413,7 @@ export class HandControl {
       if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(this._pump);
       else requestAnimationFrame(this._pump);
       if (video.readyState < 2 || !video.videoWidth) return;
+      if (this.path === 'server') { this._sendToServer(video); return; }
       if (this.path !== 'worker') {
         const mt = mains[this.path];
         if (!mt?.hands) return;
@@ -404,7 +431,10 @@ export class HandControl {
       const k = Math.min(1, (this.opts.maxFrame || SETTINGS.maxFrame) / Math.max(video.videoWidth, video.videoHeight));
       const w = Math.round(video.videoWidth * k), h = Math.round(video.videoHeight * k);
       const t = performance.now();
-      const pose = SETTINGS.forearm && this.opts.forearm !== false && this.camera === 'front' && (this.frameNo++ % SETTINGS.poseEvery === 0);
+      // (the forearm only matters when the hand's own rotation drives the gripper: otherwise the
+      // Pose model would only take the graphics chip's time from the hand tracker)
+      const pose = SETTINGS.forearm && SETTINGS.handRotation && this.opts.forearm !== false && this.camera === 'front'
+        && (this.frameNo++ % SETTINGS.poseEvery === 0);
       const send = (bmp) => shared.worker.postMessage({ type: 'frame', bitmap: bmp, t, pose }, [bmp]);
       createImageBitmap(video, { resizeWidth: w, resizeHeight: h, resizeQuality: 'low' }).then(send).catch(() => {
         canvas.width = w; canvas.height = h;                 // (older browsers: through a canvas)
@@ -413,9 +443,48 @@ export class HandControl {
       });
     };
     this._pump();
+    this._keyTimer = setInterval(() => this._keyTick(), 16);
   }
 
-  stop() { this.running = false; if (shared) shared.onResult = null; }
+  stop() { this.running = false; clearInterval(this._keyTimer); this.srv?.ws.close(); if (shared) shared.onResult = null; }
+
+  /** Track on the server instead (TEST_TELEOP/tracker.py): for a computer too slow to track the
+   *  hand itself. The camera's pictures go to url (a websocket) as JPEGs, at most two on the way;
+   *  the landmarks come back and go through _result like the browser's own. Resolves once the
+   *  server answers the first picture (its tracker takes a few seconds to start). */
+  useServer(url) {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(url);
+      ws.binaryType = 'arraybuffer';
+      this.srv = { ws, inflight: 0, canvas: null, first: resolve };
+      ws.onopen = () => { this.path = 'server'; this.bench = null; };
+      ws.onerror = () => reject(new Error('could not reach the server tracker'));
+      ws.onclose = () => { if (this.path === 'server') this.path = 'worker'; };
+      ws.onmessage = (ev) => {
+        const m = JSON.parse(ev.data);
+        this.srv.inflight = Math.max(0, this.srv.inflight - 1);
+        if (this.srv.first) { this.srv.first(); this.srv.first = null; }
+        this._result({ t: m.t, lm: m.lm, wl: m.wl, pose: null, ms: m.ms });
+      };
+    });
+  }
+  _sendToServer(video) {
+    const s = this.srv;
+    if (!s || s.ws.readyState !== 1 || s.inflight >= 2 || s.encoding) return;
+    const w = 640, h = Math.round(640 * video.videoHeight / video.videoWidth);
+    s.canvas ??= typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(w, h) : Object.assign(document.createElement('canvas'), { width: w, height: h });
+    s.canvas.getContext('2d').drawImage(video, 0, 0, w, h);
+    const t = performance.now();
+    s.encoding = true;
+    const blob = s.canvas.convertToBlob ? s.canvas.convertToBlob({ type: 'image/jpeg', quality: 0.75 })
+      : new Promise(r => s.canvas.toBlob(r, 'image/jpeg', 0.75));
+    blob.then(b => b.arrayBuffer()).then((jpeg) => {
+      const msg = new Uint8Array(8 + jpeg.byteLength);
+      new DataView(msg.buffer).setFloat64(0, t, true);
+      msg.set(new Uint8Array(jpeg), 8);
+      if (s.ws.readyState === 1) { s.ws.send(msg); s.inflight++; }
+    }).finally(() => { s.encoding = false; });
+  }
   /** the tilt keys held now: pitch +1 forward / -1 back, roll +1 right / -1 left */
   setTilt(pitch, roll, turn = 0) { this.tilt = { pitch, roll, turn }; }
   /** gripMode 'key' (or any mode but 'pinch'): close the gripper if open, open it if closed */
@@ -481,6 +550,7 @@ export class HandControl {
     if (m.lm && m.wl) {
       const f = this.f;
       const hp = handPose(m.lm, m.wl, W, H, f);
+      state.box = boxState(m.lm, W, H);
       state.tracked = true;
       if (m.pose && this.camera === 'front') this.pose = m.pose;   // (the forearm: from the last frame it ran on)
       // the full 3D pose; a bad solution (a confused tracker) is dropped and the last one kept
@@ -545,7 +615,10 @@ export class HandControl {
       const back = this.holding;                       // (back after a short loss: see SETTINGS.holdLost)
       this.lostAt = null;
       this.holding = false;
-      const paused = this.fist || (this.gripMode === 'pinchToggle' && this.pinchHeld);   // (a pinch pauses like a fist)
+      // (a pinch pauses like a fist; so does the hand leaving the box: near the picture's edge the
+      // tracking loses fingers and jumps. Back inside, it settles and re-anchors: no jump)
+      const paused = this.fist || (this.gripMode === 'pinchToggle' && this.pinchHeld) || (this.opts.box !== false && state.box.out);
+      state.outOfBox = this.opts.box !== false && state.box.out;
       this.openFrames = paused ? 0 : (this.openFrames || 0) + 1;
       const settled = this.openFrames >= SETTINGS.settleFrames;
       if (back && this.openFrames > 1) {               // (the filters start afresh where the hand is now, the
@@ -648,7 +721,7 @@ export class HandControl {
       const lk = this.tilt, rk = st.rot_keys || {};
       const keys = lk.pitch || lk.roll || lk.turn ? lk : { pitch: rk.pitch || 0, roll: rk.roll || 0, turn: rk.turn || 0 };
       const driving = this.armed && settled;
-      if (driving) this.keyYaw += keys.turn * SETTINGS.turnRate * Math.PI / 180 * dt;
+      this._advanceKeys(keys, driving, rotation === 'full', t);
       const steady = !SETTINGS.handRotation;
       const yaw = (steady ? 0 : this.twist) + this.keyYaw + vy;
       let Rh = null, q;
@@ -658,9 +731,6 @@ export class HandControl {
         state.facing = sol.facing;
       }
       if (rotation === 'full' && (Rh || steady)) {
-        const r = driving ? SETTINGS.tiltRate * Math.PI / 180 * dt : 0;
-        this.pitch += keys.pitch * r;
-        this.roll += keys.roll * r;
         const vk = vy + (steady ? this.keyYaw : 0);
         const cv2 = Math.cos(vk), sv2 = Math.sin(vk), cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
         const cr = Math.cos(this.roll), sr = Math.sin(this.roll);
@@ -679,6 +749,7 @@ export class HandControl {
         q = [Math.cos(yaw / 2), 0, 0, Math.sin(yaw / 2)];
       }
       pose = [...mj, ...q];
+      this.keyCtx = { rotation, vy, keys, side: st.task_game?.arm || 'right' };   // (the keys' re-sends between frames)
       // (the output's recent states, before the hand's shape began to change: see the roll-back above)
       if (!sb.frozen) {
         this.outHist.push(this._snapshot());
@@ -702,12 +773,53 @@ export class HandControl {
       }
     }
     this._log(m, state, t);
+    this.lastState = state;
     this.opts.onFrame?.(state);
     if (!this.armed) return;
     const side = st.task_game?.arm || 'right';
     const right = pose ? { pose, grip: state.driving ? 1 : 0, stick: [0, this.pinched ? 1 : -1], buttons: [], epoch: this.epoch } : null;
     this.opts.send({ type: 'input', t, head: null, left: null, right: null, [side]: right, tracker: 'hand' });
   }
+
+  /** the turn and tilt keys, added up by the clock (not per tracker frame: at 10-30 frames a
+   *  second that turned the gripper in visible steps); only while driving */
+  _advanceKeys(keys, driving, full, t) {
+    const dt = this.keyT == null ? 0 : Math.min(0.1, Math.max(0, t - this.keyT));
+    this.keyT = t;
+    if (!driving) return;
+    this.keyYaw += keys.turn * SETTINGS.turnRate * Math.PI / 180 * dt;
+    if (full) {
+      this.pitch += keys.pitch * SETTINGS.tiltRate * Math.PI / 180 * dt;
+      this.roll += keys.roll * SETTINGS.tiltRate * Math.PI / 180 * dt;
+    }
+  }
+
+  /** steady (the keys alone turn the gripper): between tracker frames, while a turn or tilt key is
+   *  held, the last pose is sent again with the keys' rotation now (~60 a second), so the turn
+   *  glides; the position stays the last frame's */
+  _keyTick() {
+    const c = this.keyCtx, s = this.lastState;
+    if (!SETTINGS.handRotation && this.armed && c && s?.driving && !s.held && this.lastPose) {
+      const lk = this.tilt, rk = (this.opts.status() || {}).rot_keys || {};
+      const keys = lk.pitch || lk.roll || lk.turn ? lk : { pitch: rk.pitch || 0, roll: rk.roll || 0, turn: rk.turn || 0 };
+      if (!(keys.turn || (c.rotation === 'full' && (keys.pitch || keys.roll)))) return;
+      const t = this.now() / 1000;
+      this._advanceKeys(keys, true, c.rotation === 'full', t);
+      const pose = [...this.lastPose.slice(0, 3), ...steadyQuat(c.rotation, c.vy, this.keyYaw, this.pitch, this.roll)];
+      this.lastPose = pose;
+      const right = { pose, grip: 1, stick: [0, this.pinched ? 1 : -1], buttons: [], epoch: this.epoch };
+      this.opts.send({ type: 'input', t, head: null, left: null, right: null, [c.side]: right, tracker: 'hand' });
+    }
+  }
+}
+
+/** the gripper's rotation from the keys alone (steady): 'yaw' a turn about up; 'full' the turn,
+ *  then the tilt forward/back (about the robot's left axis) and sideways (its forward axis) */
+function steadyQuat(rotation, vy, keyYaw, pitch, roll) {
+  if (rotation !== 'full') { const y = keyYaw + vy; return [Math.cos(y / 2), 0, 0, Math.sin(y / 2)]; }
+  const vk = vy + keyYaw;
+  const cv = Math.cos(vk), sv = Math.sin(vk), cp = Math.cos(pitch), sp = Math.sin(pitch), cr = Math.cos(roll), sr = Math.sin(roll);
+  return matToQuat(mulMM([[cv, -sv, 0], [sv, cv, 0], [0, 0, 1]], mulMM([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]], [[1, 0, 0], [0, cr, -sr], [0, sr, cr]])));
 }
 
 /** The hand's axes drawn on the camera picture (image 0..1): fingers, across, out of the palm. */
@@ -747,7 +859,9 @@ function quatToMat([w, x, y, z]) {
 /** Open a camera (the front one on a phone: it stands in front of the person like a webcam). */
 export async function openCamera(facing = 'user') {
   const stream = await navigator.mediaDevices.getUserMedia({
-    audio: false, video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } } });
+    // (60 pictures a second where the camera can: the tracker takes the newest, more of them means
+    // smaller steps between them)
+    audio: false, video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 } } });
   const video = document.createElement('video');
   video.setAttribute('playsinline', ''); video.muted = true; video.srcObject = stream;
   await video.play();

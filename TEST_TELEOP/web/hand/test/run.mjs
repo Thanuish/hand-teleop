@@ -14,6 +14,7 @@
 //   6. steady (the default): the hand's turn and tilt don't turn the gripper; the keys do, the right way
 //   7. a 2-frame distance glitch doesn't make the robot lurch
 //   8. gripMode 'pinchToggle': a pinch closes the gripper, the next opens it, the open hand drives
+//   9. Q held with a slow tracker: the turn glides between frames
 import { HandControl, matToQuat, SETTINGS } from '../core.js';
 import { solveHandPose, PalmModel, PALM_IDS, solveWristPosition, estimateHfov, HandShape, hfovOf, quatToMat,
          logSO3, mulMM, T, len, sub, add } from '../pose3d.js';
@@ -30,7 +31,8 @@ function session({ mode = 'below', rotation = 'full', hfov = 60, seed = 3, grasp
   let clock = 0;
   const sent = [];
   const st = { view_yaw: 0, task_game: { rotation, arm: 'right' } };
-  const hc = new HandControl({ camera: mode, send: (m) => sent.push(m), status: () => st, now: () => clock });
+  // (box: false: the synthetic hand's wrist is at the picture's centre, its fingers run off the top)
+  const hc = new HandControl({ camera: mode, send: (m) => sent.push(m), status: () => st, now: () => clock, box: false });
   if (grasp) Object.assign(hc.stab, grasp);
   hc.video = { videoWidth: cam.W, videoHeight: cam.H };
   const frame = (R, t, shape, distort) => {
@@ -40,7 +42,8 @@ function session({ mode = 'below', rotation = 'full', hfov = 60, seed = 3, grasp
     hc._result({ lm: v.lm, wl: v.wl, t: clock, pose: null });
   };
   const last = () => { const r = sent.at(-1)?.right; return r ? { pos: r.pose.slice(0, 3), R: quatToMat(r.pose.slice(3)), epoch: r.epoch } : null; };
-  return { cam, hc, frame, last, st, sent };
+  const tick = (ms) => { clock += ms; };               // (the clock on, without a frame)
+  return { cam, hc, frame, last, st, sent, tick };
 }
 // 'below': the camera on the desk looking up (its z up); the hand 32 cm above it, palm down,
 // fingers toward the image's top (= toward the computer screen), thumb to the image's right
@@ -326,6 +329,67 @@ console.log("8. gripMode 'pinchToggle': a pinch closes the gripper, the open han
   for (let k = 3; k >= 0; k--) s.frame(FRONT, w, { pinch: k / 4 });
   for (let k = 0; k < 30; k++) s.frame(FRONT, w);
   check(!closed() && s.sent.at(-1).right.grip, 'the second pinch opens it, and the open hand drives again');
+}
+
+// ------------------------------------------------------------ 9. key turning between tracker frames
+console.log('9. Q held with a slow tracker (10 frames a second): the turn glides between frames (re-sent ~60 a second)');
+{
+  const s = session({ mode: 'front', rotation: 'yaw', seed: 23 });
+  const FRONT = cols([0, -1, 0], [-1, 0, 0], [0, 0, -1]);
+  const W0 = [0.02, 0.0, 0.45];
+  for (let k = 0; k < 40; k++) s.frame(FRONT, W0);
+  s.hc.arm(true);
+  for (let k = 0; k < 30; k++) s.frame(FRONT, W0);
+  s.hc.setTilt(0, 0, 1);
+  const yawOf = (m) => { const q = m.right.pose.slice(3); return 2 * Math.atan2(q[3], q[0]); };
+  const yaws = [];
+  for (let f = 0; f < 10; f++) {                       // 1 s: a tracker frame every 100 ms, key ticks every 16 ms between
+    s.frame(FRONT, W0); yaws.push(yawOf(s.sent.at(-1)));
+    // (the test clock: frame() moved it 33 ms; 67 ms more until the next frame, a key tick each 16.7 ms)
+    for (let k = 0; k < 4; k++) { s.tick(16.7); s.hc._keyTick(); yaws.push(yawOf(s.sent.at(-1))); }
+    s.tick(100 - 33.3 - 4 * 16.7);
+  }
+  s.hc.setTilt(0, 0, 0);
+  const steps = yaws.slice(1).map((y, i) => deg(y - yaws[i]));
+  console.log(`     ${yaws.length} poses sent in 1 s; turned ${deg(yaws.at(-1) - yaws[0]).toFixed(1)} deg; biggest step ${Math.max(...steps).toFixed(2)} deg`);
+  check(yaws.length >= 45 && Math.max(...steps) < 3.5 && Math.min(...steps) >= 0,
+        'turns in small even steps (< 3.5 deg) between frames; at 10 frames a second it was 9 deg a frame');
+}
+
+// ------------------------------------------------------------ 10. the hand box
+console.log('10. the hand box: the hand well inside drives; leaving the box pauses the robot; back inside, no jump');
+{
+  const s = session({ mode: 'front', rotation: 'yaw', seed: 29 });
+  s.hc.opts.box = true;
+  const FRONT = cols([0, -1, 0], [-1, 0, 0], [0, 0, -1]);
+  const IN = [0.02, 0.09, 0.5];                        // (wrist low in the picture: the whole hand inside)
+  for (let k = 0; k < 40; k++) s.frame(FRONT, IN);
+  check(s.hc.lastState.box.inside, 'the hand low in the picture is inside the box');
+  s.hc.arm(true);
+  for (let k = 0; k < 30; k++) s.frame(FRONT, IN);
+  check(s.sent.at(-1).right.grip === 1, 'inside: it drives');
+  // the robot as the server moves it: the input's motion while engaged, within one epoch
+  let robot = [0, 0, 0], prev = s.sent.at(-1).right, movedOut = 0, maxStep = 0;
+  const follow = () => {
+    const r = s.sent.at(-1).right;
+    if (r.grip && prev.grip && r.epoch === prev.epoch) {
+      const d = sub(r.pose.slice(0, 3), prev.pose.slice(0, 3));
+      robot = add(robot, d);
+      maxStep = Math.max(maxStep, len(d));
+      if (s.hc.lastState.outOfBox) movedOut += len(d);
+    }
+    prev = r;
+  };
+  let paused = false;
+  for (let k = 1; k <= 20; k++) {
+    s.frame(FRONT, add(IN, [0.22 * k / 20, 0, 0])); follow();          // (11 mm a frame)
+    paused ||= s.hc.lastState.outOfBox && s.sent.at(-1).right.grip === 0;
+  }
+  check(paused && movedOut === 0, 'moved out sideways: out of the box, the robot pauses (no motion while out)');
+  for (let k = 1; k <= 20; k++) { s.frame(FRONT, add(IN, [0.22 * (1 - k / 20), 0, 0])); follow(); }
+  for (let k = 0; k < 30; k++) { s.frame(FRONT, IN); follow(); }
+  check(s.sent.at(-1).right.grip === 1 && maxStep < 0.016,
+        `back inside: it drives again, no jump (the biggest step in a frame ${mm(maxStep)} mm; the hand moved 11 mm a frame)`);
 }
 
 console.log(failed ? `\n${failed} FAILED` : '\nall passed');

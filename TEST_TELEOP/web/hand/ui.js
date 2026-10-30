@@ -66,14 +66,18 @@ export function drawHand(canvas, video, state, { mirror = true, dim = 0.25 } = {
 export const GRIP_TEXT = 'Open it, then pinch 🤏 thumb and index finger once: the gripper <b>closes</b>';
 export const OPEN_TEXT = 'Pinch 🤏 again: it <b>opens</b>. Then open your hand ✋: now it <b>drives</b> the robot';
 
-/** The start checklist: each step ticks off when done, in order; then onDone(). Steps:
- *  camera on, hand seen, a fist (that pauses), a pinch (that grips), open the hand (go). */
+/** The start checklist: each step ticks off when done, in order; then onDone(). The default
+ *  steps: camera on, hand seen, a fist (that pauses), a pinch (that grips), open the hand (go).
+ *  opts.steps replaces them: [key, html, check?, {hold, anim}?] where check(state, ctx) returns
+ *  true (done), false, or a string (not yet: a hint shown under the step, e.g. "move closer");
+ *  hold: frames it must hold (default 6, the camera 1); anim: a short looping picture (HTML)
+ *  shown beside the step while it is the current one. */
 export class Checklist {
-  constructor(el, onDone, { gripText, openText, again } = {}) {
+  constructor(el, onDone, { gripText, openText, again, steps } = {}) {
     this.el = el;
     this.onDone = onDone;
     // again: done before on this page (a refresh): only the camera, the hand and open
-    this.steps = again ? [
+    this.steps = steps || (again ? [
       ['camera', 'Camera on'],
       ['hand', 'Welcome back: show your hand, the whole hand in view'],
       ['open', 'Open your hand ✋: it <b>drives</b> the robot again'],
@@ -83,10 +87,11 @@ export class Checklist {
       ['fist', 'Make a fist ✊: that <b>pauses</b> the robot'],
       ['pinch', gripText || 'Open it, then pinch 🤏 thumb and index finger: that <b>grips</b>'],
       ['open', openText || 'Open your hand ✋: now it <b>drives</b> the robot'],
-    ];
+    ]);
     this.i = 0;
     this.held = 0;
-    el.innerHTML = this.steps.map(([k, t]) => `<li data-k="${k}"><span class="tick"></span><span>${t}</span></li>`).join('');
+    el.innerHTML = this.steps.map(([k, t, , o]) => `<li data-k="${k}"><span class="tick"></span><span class="txt"><span>${t}</span>`
+      + `<span class="hint"></span></span>${o?.anim ? `<span class="anim">${o.anim}</span>` : ''}</li>`).join('');
     this._render();
   }
   _render() {
@@ -95,23 +100,53 @@ export class Checklist {
       li.classList.toggle('now', j === this.i);
     });
   }
-  /** camera: is it on; state: HandControl's frame state */
-  update(camera, state) {
+  /** camera: is it on; state: HandControl's frame state; ctx: anything the checks need */
+  update(camera, state, ctx = {}) {
     if (this.i >= this.steps.length) return;
-    const k = this.steps[this.i][0];
+    const [k, , check, o] = this.steps[this.i];
     const g = state?.gesture;
-    const ok = k === 'camera' ? camera
+    const r = check ? check(state, { camera, ...ctx })
+      : k === 'camera' ? camera
       : k === 'hand' ? !!state?.tracked
       : k === 'fist' ? g === 'fist'
       : k === 'pinch' ? g === 'pinch'
       : g === 'open' && !state?.gripping;
+    const ok = r === true;
+    const hint = this.el.children[this.i].querySelector('.hint');
+    if (hint) hint.textContent = typeof r === 'string' ? r : '';
     this.held = ok ? this.held + 1 : 0;
-    if (this.held >= (k === 'camera' ? 1 : 6)) {             // (held for a few frames: not a flicker)
+    if (this.held >= (o?.hold ?? (k === 'camera' ? 1 : 6))) {   // (held for a few frames: not a flicker)
+      if (hint) hint.textContent = '';
       this.i++;
       this.held = 0;
       this._render();
       if (this.i >= this.steps.length) this.onDone?.();
     }
   }
+  /** skip the current step (a check that may be passed by, e.g. a slow device after a warning) */
+  skip() {
+    if (this.i >= this.steps.length) return;
+    this.i++; this.held = 0; this._render();
+    if (this.i >= this.steps.length) this.onDone?.();
+  }
+  get current() { return this.steps[this.i]?.[0] ?? null; }
   get done() { return this.i >= this.steps.length; }
+}
+
+/** Draw the hand box on a camera canvas: green when the hand is well inside, amber near the
+ *  edge, red when it is out (state.box from HandControl: {inside, near}). */
+export function drawBox(canvas, video, state, box) {
+  if (!video?.videoWidth) return;
+  const ctx = canvas.getContext('2d'), w = canvas.width, h = canvas.height;
+  const vr = video.videoWidth / video.videoHeight, cr = w / h;
+  let sw = 1, sh = 1, sx = 0, sy = 0;                              // (the same crop as drawHand, in 0..1)
+  if (vr > cr) { sw = cr / vr; sx = (1 - sw) / 2; } else { sh = vr / cr; sy = (1 - sh) / 2; }
+  const X = (x) => (1 - (x - sx) / sw) * w, Y = (y) => (y - sy) / sh * h;   // (mirrored)
+  const b = state?.box;
+  const col = !state?.tracked ? 'rgba(255,255,255,.35)' : !b?.inside ? '#ff5f6d' : b.near ? '#ffc24a' : '#3ee08f';
+  ctx.save();
+  ctx.strokeStyle = col; ctx.lineWidth = Math.max(2, w / 240); ctx.setLineDash([w / 40, w / 60]);
+  const x0 = X(box.x1), x1 = X(box.x0), y0 = Y(box.y0), y1 = Y(box.y1);
+  ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+  ctx.restore();
 }

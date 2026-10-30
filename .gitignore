@@ -6,5 +6,6 @@ __pycache__/
 *.mp4
 
 assets/generated/
+assets/models/
 MUJOCO_LOG.TXT
 .DS_Store

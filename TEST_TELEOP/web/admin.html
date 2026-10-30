@@ -23,12 +23,12 @@
     .grade.gD { color: #ffa24a; } .grade.gF { color: #ff7070; }
     .st { padding: 2px 8px; border-radius: 10px; font-size: 12px; background: #333842; }
     .st.playing { background: #2f6fde; } .st.done { background: #2d6b45; } .st.abandoned { background: #7a4a1f; }
-    #codes { font: 13px ui-monospace, Menlo, Consolas, monospace; white-space: pre; color: #cfe; }
+    tr.reset td { opacity: .5; }
   </style>
 </head>
 <body>
   <h1>Screening results</h1>
-  <div class="muted">Updates every few seconds. Candidates open the public address of your tunnel and enter their invite code.</div>
+  <div class="muted">Updates every few seconds. Send candidates the public address of your tunnel: they enter their name and email (one attempt per email).</div>
   <div class="panel"><b>Public address for candidates:</b> <span id="publicUrl" style="font-family:ui-monospace,monospace"></span></div>
   <div class="panel" id="configError" style="display:none;border-color:#a44;color:#fbb;white-space:pre-wrap"></div>
 
@@ -52,25 +52,15 @@
       <select id="onlyPart" style="background:#111;color:#eee;border:1px solid #444;border-radius:6px;padding:6px 8px;font:inherit">
       </select>
       <button id="makeTest">Create test link</button>
-      <span class="muted">phone pairing, then only that part (no verdict; batch "Testing")</span>
+      <span class="muted">phone pairing, then only that part (no verdict; batch "Test runs"; each visit is a new run)</span>
     </div>
     <div id="testLink" style="font:13px ui-monospace,Menlo,Consolas,monospace;color:#cfe;margin-top:6px"></div>
   </div>
 
-  <div class="panel">
-    <div class="row">
-      <b>New invite codes</b> batch name <input id="batchName" placeholder="e.g. October A">
-      number <input id="batchN" type="number" value="15" min="1" max="100">
-      <button id="makeBatch">Create</button>
-      <a class="btn" href="/admin/results.csv">Download CSV</a>
-    </div>
-    <div id="codes"></div>
-  </div>
-
-  <h2>Candidates <span class="muted" id="count"></span></h2>
+  <h2>Candidates <span class="muted" id="count"></span> <a class="btn" href="/admin/results.csv" style="margin-left:10px;font-size:13px">Download CSV</a></h2>
   <div style="overflow-x:auto"><table>
     <thead><tr>
-      <th data-k="name">Name</th><th data-k="code">Code</th><th data-k="batch">Batch</th><th data-k="status">Status</th>
+      <th data-k="name">Name</th><th data-k="email">Email</th><th data-k="batch">Batch</th><th data-k="status">Status</th>
       <th data-k="phase">Phase</th><th data-k="reach_efficiency">Reach eff.</th>
       <th id="taskCols" style="display:none"></th><th data-k="overall">Overall</th><th data-k="grade">Grade</th>
       <th data-k="completion" title="Skill profile over all tasks (0-100): completion · speed · precision · economy of motion">Skills <span class="muted">C · S · P · E</span></th>
@@ -126,9 +116,9 @@ function render() {
   });
   $('count').textContent = `(${rows.length}, ${rows.filter(r => r.status === 'done').length} finished, ` +
     `${rows.filter(r => r.pass === true).length} passed)`;
-  $('rows').innerHTML = rows.map(r => `<tr>
-    <td>${esc(r.name) || '<span class="muted">not used yet</span>'}</td>
-    <td title="${data.public_url ? data.public_url + '/?code=' + r.code : ''}">${r.code}</td>
+  $('rows').innerHTML = rows.map(r => `<tr class="${r.status === 'reset' ? 'reset' : ''}">
+    <td title="${esc(r.code)}">${esc(r.name) || '<span class="muted">not used yet</span>'}</td>
+    <td>${esc(r.email)}</td>
     <td>${esc(r.batch)}${r.only ? ` <span class="st">only ${esc(r.only)}</span>` : ''}</td>
     <td><span class="st ${r.status}">${r.status}${r.running ? ' ●' : ''}</span></td>
     <td>${esc(r.phase || '')}</td>
@@ -140,7 +130,7 @@ function render() {
     <td class="num">${r.completion == null ? '' : [r.completion, r.speed, r.precision, r.economy].map(v => num(v, 0)).join(' · ')}</td>
     <td>${r.pass === true ? '<span class="pass">PASS</span>' : r.pass === false ? '<span class="fail">FAIL</span>' : ''}</td>
     <td>${esc(r.started || '')}</td>
-    <td>${r.status !== 'new' ? `<button class="secondary" onclick="retake('${r.code}')" title="Let this candidate take the test again (the old attempt is kept)">Allow retake</button>` : ''}</td>
+    <td>${r.email && r.status !== 'reset' ?`<button class="secondary" onclick="retake('${r.code}')" title="Let this candidate take the test again (the old attempt is kept)">Allow retake</button>` : ''}</td>
   </tr>`).join('');
 }
 /** a task's parts (0..1) for the hover text of its score */
@@ -156,28 +146,16 @@ function sortBy(k) {
 }
 document.querySelectorAll('th[data-k]').forEach(th => th.onclick = () => sortBy(th.dataset.k));
 async function retake(code) {
-  if (!confirm(`Let ${code} take the test again? Their current attempt is kept in its folder, renamed.`)) return;
+  const r = data.candidates.find(x => x.code === code) || {};
+  if (!confirm(`Let ${r.name || code}${r.email ? ' (' + r.email + ')' : ''} take the test again? ` +
+               'The current attempt stays in the list and in its folder; they can join again with the same email.')) return;
   await fetch(`/admin/reset/${code}`, { method: 'POST' });
   load();
 }
-$('makeBatch').onclick = async () => {
-  const r = await fetch('/admin/batch', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: $('batchName').value, n: +$('batchN').value }) });
-  const j = await r.json();
-  const base = data.public_url || '(public address)';
-  $('codes').textContent = 'New invite links (send one to each candidate; each works once):\n' +
-    j.codes.map(c => `${base}/?code=${c}`).join('\n');
-  load();
-};
-$('makeTest').onclick = async () => {
+$('makeTest').onclick = () => {
   const only = $('onlyPart').value;
-  const r = await fetch('/admin/batch', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: 'Testing', n: 1, only }) });
-  if (!r.ok) { $('testLink').textContent = await r.text(); return; }
-  const j = await r.json();
-  const base = data.public_url || '(public address)';
-  $('testLink').innerHTML = `Test link (${only} only): <a style="color:#8bf" href="${base}/?code=${j.codes[0]}">${base}/?code=${j.codes[0]}</a>`;
-  load();
+  const url = `${data.public_url || location.origin}${data.test_path}?only=${encodeURIComponent(only)}`;
+  $('testLink').innerHTML = `Test link (${esc(only)} only): <a style="color:#8bf" href="${esc(url)}">${esc(url)}</a>`;
 };
 $('saveSettings').onclick = async () => {
   const r = await fetch('/admin/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },

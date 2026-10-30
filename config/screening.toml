@@ -38,7 +38,7 @@ mount = "floating"             # "floating": the gripper on its own, no arm (it 
 
 [controls]
 motion_scale = 1.0             # the robot moves this many cm per cm the phone moves
-hand_smoothing_s = 0.03       # the same for a hand tracked by a camera (it is smoothed on the device already: little here, less lag)
+hand_smoothing_s = 0.03        # the same for a hand tracked by a camera (critically damped: glides through its ~30 updates a second)
 hand_rotation_scale = 0.5      # ... and turns this much of the hand's turn (0.5: a 40 deg turn of the hand turns the gripper 20 deg)
 hand_motion_scale = 0.35       # a camera-tracked hand: the robot moves this many cm per cm of hand (slower = more precise, calmer)
 smoothing_s = 0.12             # smooths the phone's motion (it sends ~30 positions a second); higher =
@@ -72,7 +72,7 @@ color = [0.2, 1.0, 0.4, 0.55]
 
 # ---------------------------------------------------------------------------- timing and checks
 [timing]
-countdown_s = 3.0              # countdown before each timed phase
+countdown_s = 10.0             # before each timed phase: its card (what to do, the controls) for 7 s, then a 3 s countdown
 pair_hold_s = 1.0              # the phone must be connected this long before the test goes on
 
 [tolerances]
@@ -522,14 +522,14 @@ handle_length = 0.12
 key = "pair"
 kind = "pair"
 title = "Hand control"
-text = "Start the camera and follow the steps: your open hand drives the robot, a fist pauses it, a pinch grips (let go: open the fingers)."
+text = "Start the camera and follow the steps: your open hand drives the robot, a fist pauses it, a pinch closes the gripper and the next pinch opens it."
 
 [[phases]]
 key = "pick"
 title = "Practice: pick and place"
 scored = false
 time_limit_s = 180
-text = "Bring the open gripper down around the yellow cube, tap GRAB, lift it, put it into the green square and tap RELEASE. Turn your phone to turn the gripper."
+text = "Bring the open gripper down around the yellow cube (the ring under the gripper turns green when it is low enough), pinch to grip, lift it, put it into the green square and pinch again to let go. Q and E turn the gripper."
 objects = ["tut_cube"]
 markers = ["zone"]
 steps = [
@@ -543,7 +543,7 @@ scored = true
 time_limit_s = 300
 par_time_s = 90
 par_path_m = 3.5
-text = "Put each shape into its outline on the board. Turn the shapes to match."
+text = "Put each shape into its outline on the board. Turn the gripper with Q and E so the shapes match their outlines."
 objects = ["big_square", "small_square", "bar"]
 markers = ["slot_big_square", "slot_small_square", "slot_bar"]
 steps = [
@@ -577,7 +577,7 @@ par_time_s = 150
 par_path_m = 3.5
 weight = 1.5                   # tilting and pouring (all six degrees of freedom) counts more
 rotation = "full"
-text = "Now the gripper also tilts and twists with your phone. Take the book out of its holder, turn it flat and lay it on the green mat. Then pour the balls from the cup into the bowl and set the cup down upright."
+text = "Now the gripper also tilts: W and S tilt it forward and back, A and D sideways, Q and E turn it. Take the book out of its holder and lay it flat on the green mat. Then pour the balls from the cup into the bowl and set the cup down upright."
 objects = ["book", "cup", "ball"]
 markers = ["holder", "mat", "bowl"]
 steps = [
@@ -597,7 +597,7 @@ weight = 1.5                   # six degrees of freedom: counts more
 rotation = "full"
 repeat = true                  # all three on their pegs: a new round (the rings back in their holders) until time is up
 target_rounds = 3              # 3 rounds (9 rings) score full marks
-text = "Hang each ring on the peg straight ahead of it, the same colour. The pegs lean at different angles: tilt the ring with your phone so the peg goes through the hole, then let go. When all three are on, they come back for the next round: as many rounds as you can."
+text = "Hang each ring on the peg of its colour. The pegs lean at different angles: tilt the ring with W S A D so the peg goes through the hole, then pinch to let go. When all three are on, they come back for the next round: as many rounds as you can."
 objects = ["ring_red", "ring_blue", "ring_green"]
 markers = ["ring_holder_red", "ring_holder_blue", "ring_holder_green", "peg_red", "peg_blue", "peg_green"]
 steps = [
@@ -613,7 +613,7 @@ scored = true
 time_limit_s = 240
 par_path_m = 10.0              # (for a tower of the target height; speed here = how high it got)
 rotation = "yaw"
-text = "Take each block from the yellow square and stack them on the wooden platform. Build as high as you can: lower each block gently onto the one below, then RELEASE. A new block appears when you take one."
+text = "Take each block from the yellow square and stack them on the wooden platform. Build as high as you can: lower each block gently onto the one below, then pinch to let go. A new block appears when you take one."
 objects = ["tower_block"]
 markers = ["tower_supply", "tower_platform"]
 steps = [{ type = "stack", objects = "tower_block", platform = "tower_platform", supply = "tower_supply", target_height = 0.25 }]

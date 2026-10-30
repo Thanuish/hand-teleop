@@ -34,6 +34,17 @@ def _quat(R):
     return q
 
 
+def _smooth_damp(x, target, v, T: float, dt: float):
+    """One step of a critically damped follower toward target (time constant T, velocity v);
+    stable for any dt (the closed form's Pade approximation). Returns (x, v)."""
+    w = 2.0 / T
+    k = w * dt
+    e = 1.0 / (1.0 + k + 0.48 * k * k + 0.235 * k * k * k)
+    d = x - target
+    tmp = (v + w * d) * dt
+    return target + (d + tmp) * e, (v - w * tmp) * e
+
+
 class DualArms:
     def __init__(self, info: S.SceneInfo, task: str, pos_scale: float = 1.0):
         self.info = info
@@ -171,21 +182,23 @@ class DualArms:
             self._homing[s] = None
 
     def _smoothed(self, s: str, pos, quat, dt: float):
-        """Move toward (pos, quat) a fraction 1 - exp(-dt / smoothing) of the way per tick."""
+        """Follow (pos, quat) critically damped (a spring that doesn't overshoot) with time
+        constant `smoothing`: the target arrives in steps (a hand tracked ~30 times a second, a
+        phone's ~30 poses); a first-order lag stopped and started at each step, this glides
+        through them. The quaternion's components follow the same way, then normalized."""
         if not self.smoothing:
             return pos, quat
-        if self._smooth[s] is None:
-            self._smooth[s] = (np.array(pos, float), np.array(quat, float))
-            return self._smooth[s]
-        a = 1.0 - np.exp(-dt / self.smoothing)
-        sp, sq = self._smooth[s]
         q1 = np.array(quat, float)
-        if np.dot(sq, q1) < 0:
+        if self._smooth[s] is None:
+            self._smooth[s] = dict(p=np.array(pos, float), vp=np.zeros(3), q=q1, vq=np.zeros(4))
+            return self._smooth[s]["p"], self._smooth[s]["q"]
+        st = self._smooth[s]
+        if np.dot(st["q"], q1) < 0:
             q1 = -q1
-        sp = sp + (np.asarray(pos, float) - sp) * a
-        sq = sq * (1 - a) + q1 * a
-        self._smooth[s] = (sp, sq / np.linalg.norm(sq))
-        return self._smooth[s]
+        st["p"], st["vp"] = _smooth_damp(st["p"], np.asarray(pos, float), st["vp"], self.smoothing, dt)
+        q, st["vq"] = _smooth_damp(st["q"], q1, st["vq"], self.smoothing, dt)
+        st["q"] = q / np.linalg.norm(q)
+        return st["p"], st["q"]
 
     def _limited(self, s: str, pos, quat, dt: float):
         """Move the IK goal toward (pos, quat) at most max_speed / max_turn per second."""

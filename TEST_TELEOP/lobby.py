@@ -1,18 +1,21 @@
 ﻿"""The screening lobby: the one web server candidates connect to (through a tunnel such as
-Cloudflare Tunnel for remote candidates). It hands out invite codes, runs one simulator per
-candidate (TEST_TELEOP.worker --task screen, on a local port), relays the candidate's monitor
-page and phone to it, and shows the results to you.
+Cloudflare Tunnel for remote candidates). One public link: a candidate enters name + email and
+agrees to the recording, once per email. It runs one simulator per candidate
+(TEST_TELEOP.worker --task screen, on a local port), relays the candidate's monitor page and
+phone to it, and shows the results to you.
 
-    python -m TEST_TELEOP.lobby batch "October A" --n 15   # create 15 invite codes
     python -m TEST_TELEOP.lobby serve --tunnel             # start (or: start_screening.bat)
 
-Candidate:  /                 enter invite code + name, consent
+Candidate:  /                 name + email, consent (one attempt per email; a cookie lets the
+                              same browser come back to a test in progress)
             /play/<code>      the monitor page: the robot, the instructions, a QR code
             /m/<code>         the phone controller (Chrome on Android, WebXR motion tracking)
-You:        /admin            results, ranking, pass / fail, new invite codes (this PC only)
+You:        /admin            results, ranking, pass / fail, allow a retake (this PC only)
+            /t/<token>        a test run of your own (link on the admin page)
 
 The test itself (phases, objects, scoring, pass mark): config/screening.toml (see
-TEST_TELEOP/config.py). Data: data/screening/candidates.json (codes, names, status),
+TEST_TELEOP/config.py). Data: data/screening/screening.db (SQLite: one row per attempt with its
+hidden code, email, name, status),
 data/screening/settings.json (how many at a time, idle timeout), and per candidate
 data/screening/<batch>/<code>/screen/attempt/ (results.json, the configuration it ran with,
 one episode file per phase, the simulator's log).
@@ -28,10 +31,13 @@ import io
 import json
 import os
 import secrets
+import re
 import socket
+import sqlite3
 import subprocess
 import sys
 import time
+from contextlib import closing
 from pathlib import Path
 
 import aiohttp
@@ -40,12 +46,14 @@ from aiohttp import WSMsgType, web
 from vrteleop import scene as S
 
 from . import config as C
+from . import tracker
 
 ROOT = S.ROOT
 WEB_DIR = ROOT / "vrteleop" / "web"                  # the 3D viewer (main.js) and three.js
 TEST_WEB = Path(__file__).resolve().parent / "web"   # this test's pages
 DATA = ROOT / "data" / "screening"
-CANDIDATES = DATA / "candidates.json"
+CANDIDATES = DATA / "candidates.json"                 # (before the database: moved into it once)
+DB = DATA / "screening.db"
 SETTINGS = DATA / "settings.json"
 DEFAULT_SETTINGS = {"max_concurrent": 15, "idle_timeout_min": 20}
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"     # no 0/O, 1/I
@@ -53,9 +61,10 @@ CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"     # no 0/O, 1/I
 
 # ---------------------------------------------------------------- storage
 def set_data_dir(path: Path):
-    global DATA, CANDIDATES, SETTINGS
+    global DATA, CANDIDATES, DB, SETTINGS
     DATA = path.resolve()
     CANDIDATES = DATA / "candidates.json"
+    DB = DATA / "screening.db"
     SETTINGS = DATA / "settings.json"
 
 
@@ -106,26 +115,98 @@ def cfg() -> C.Config:
 _cfg_state = {"good": None, "error": None}
 
 
+FIELDS = ("email", "name", "batch", "created", "status", "started", "finished", "only")
+_db_ready: set[Path] = set()
+
+
+def _db() -> sqlite3.Connection:
+    """The candidates database (one row per attempt; the code is the attempt's hidden id). Made,
+    and an old candidates.json moved into it, the first time it is opened."""
+    first = DB not in _db_ready
+    if first:
+        DB.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(DB, timeout=10)
+    con.row_factory = sqlite3.Row
+    if first:
+        con.execute("PRAGMA journal_mode=WAL")
+        con.executescript("""
+            CREATE TABLE IF NOT EXISTS candidates (
+                code TEXT PRIMARY KEY, email TEXT, name TEXT NOT NULL DEFAULT '', batch TEXT NOT NULL,
+                created TEXT, status TEXT NOT NULL, started TEXT, finished TEXT, only TEXT);
+            CREATE INDEX IF NOT EXISTS candidates_email ON candidates(email);
+            -- one attempt per email; an admin's "Allow retake" marks the old one 'reset'
+            CREATE UNIQUE INDEX IF NOT EXISTS candidates_email_live ON candidates(email)
+                WHERE email IS NOT NULL AND status != 'reset';""")
+        _migrate_json(con)
+        _db_ready.add(DB)
+    return con
+
+
+def _migrate_json(con: sqlite3.Connection):
+    """The invite-code era kept candidates in candidates.json: copy them in once, keep the file
+    as candidates.json.bak."""
+    if not CANDIDATES.exists():
+        return
+    old = _load(CANDIDATES, None)
+    if not isinstance(old, dict):
+        return
+    with con:
+        for code, c in old.items():
+            con.execute("INSERT OR IGNORE INTO candidates (code, email, name, batch, created, status, started, "
+                        "finished, only) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?)",
+                        (code, c.get("name") or "", c.get("batch") or "batch", c.get("created"),
+                         c.get("status") or "new", c.get("started"), c.get("finished"), c.get("only")))
+    CANDIDATES.replace(CANDIDATES.with_name("candidates.json.bak"))
+    print(f"[lobby] moved {len(old)} candidates from {_rel(CANDIDATES)} into {_rel(DB)} (old file: candidates.json.bak)")
+
+
 def candidates() -> dict:
-    return _load(CANDIDATES, {})
+    """code -> record (email, name, batch, created, status, started, finished, only)."""
+    with closing(_db()) as con:
+        return {r["code"]: {k: r[k] for k in FIELDS} for r in con.execute("SELECT * FROM candidates ORDER BY created")}
 
 
-def new_batch(name: str, n: int, only: str | None = None) -> list[str]:
-    """n invite codes. only: a phase key (e.g. "tilt"): a test code that runs just that part."""
+def candidate(code: str) -> dict | None:
+    with closing(_db()) as con:
+        r = con.execute("SELECT * FROM candidates WHERE code = ?", (code,)).fetchone()
+    return {k: r[k] for k in FIELDS} if r else None
+
+
+def attempt_of(email: str) -> tuple[str, dict] | None:
+    """The email's current attempt (not one an admin reset), if any."""
+    with closing(_db()) as con:
+        r = con.execute("SELECT * FROM candidates WHERE email = ? AND status != 'reset'", (email,)).fetchone()
+    return (r["code"], {k: r[k] for k in FIELDS}) if r else None
+
+
+def update_candidate(code: str, **fields):
+    assert set(fields) <= set(FIELDS)
+    with closing(_db()) as con, con:
+        con.execute(f"UPDATE candidates SET {', '.join(f'{k} = ?' for k in fields)} WHERE code = ?",
+                    (*fields.values(), code))
+
+
+def delete_candidate(code: str):
+    with closing(_db()) as con, con:
+        con.execute("DELETE FROM candidates WHERE code = ?", (code,))
+
+
+def new_candidate(batch: str, name: str = "", email: str | None = None, only: str | None = None,
+                  status: str = "playing") -> str:
+    """A new attempt with a fresh hidden code. only: a phase key (e.g. "tilt"): a test run of just
+    that part. Raises sqlite3.IntegrityError if the email already has an attempt."""
     if only and only not in [p.key for p in cfg().task_phases]:
         raise ValueError(f"no task phase '{only}'")
-    cands = candidates()
-    codes = []
-    for _ in range(n):
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    with closing(_db()) as con, con:
         while True:
             code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(8))
-            if code not in cands:
+            if con.execute("SELECT 1 FROM candidates WHERE code = ?", (code,)).fetchone() is None:
                 break
-        cands[code] = {"batch": name, "created": time.strftime("%Y-%m-%d %H:%M"), "name": "",
-                       "status": "new", "started": None, "finished": None, "only": only or None}
-        codes.append(code)
-    _save(CANDIDATES, cands)
-    return codes
+        con.execute("INSERT INTO candidates (code, email, name, batch, created, status, started, finished, only) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+                    (code, email, name, batch, now, status, now if status == "playing" else None, only or None))
+    return code
 
 
 def test_token() -> str:
@@ -270,10 +351,10 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
         background:#15171c; color:#e8e8e8; font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }}
  .card {{ background:#1f2229; border:1px solid #333; border-radius:14px; padding:28px 32px; max-width:560px; margin:16px; }}
  h1 {{ font-size:22px; margin:0 0 12px; }} p {{ color:#c4c4c4; }}
- input[type=text] {{ width:100%; box-sizing:border-box; padding:10px 12px; margin:6px 0 14px; font:inherit;
+ input[type=text], input[type=email] {{ width:100%; box-sizing:border-box; padding:10px 12px; margin:6px 0 14px; font:inherit;
         background:#111; color:#eee; border:1px solid #444; border-radius:8px; }}
  button {{ background:#2f6fde; color:#fff; border:0; border-radius:8px; padding:11px 20px; font:inherit; cursor:pointer; }}
- .err {{ color:#ff8080; }} label {{ color:#c4c4c4; }} small {{ color:#888; }}
+ .err {{ color:#ff8080; }} label {{ color:#c4c4c4; }} small {{ color:#888; }} a {{ color:#8bf; }}
 </style></head><body><div class="card">{body}</div></body></html>"""
 
 
@@ -283,18 +364,27 @@ def page(title, body, status=200):
 
 
 JOIN_FORM = """<h1>Robot control test</h1>
-<p>You will control a robot arm in a simulation with your phone and do three short manipulation
-tasks, after a practice round. It takes about 20 minutes.</p>
-<p><b>You need:</b> this computer (keep this page open on its screen) and an <b>Android phone</b>
-with Chrome. You will scan a QR code with the phone.</p>
+<p>You will control a robot gripper in a simulation with your <b>bare hand</b> in front of your
+webcam, and do a few short manipulation tasks after a practice round. It takes about 20 minutes.</p>
+<p><b>You need:</b> a computer with a webcam, Chrome or Edge, good light on your hand. A short setup
+checks everything before you start. <a href="/help" target="_blank" rel="noopener">Help: what you need, camera, controls</a></p>
+<p>You can take the test once. Use the email address you applied with.</p>
 {error}
 <form method="post" action="/join">
- <label>Invite code</label><input type="text" name="code" value="{code}" autocomplete="off" required>
- <label>Your name</label><input type="text" name="name" value="{name}" required>
+ <label>Your name</label><input type="text" name="name" value="{name}" autocomplete="name" maxlength="80" required>
+ <label>Your email</label><input type="email" name="email" value="{email}" autocomplete="email" maxlength="254" required>
  <p><label><input type="checkbox" name="consent" required> I agree that my control of the robot
  is recorded and scored for this application. The recording is used only to evaluate the test.</label></p>
  <button type="submit">Start</button>
 </form>"""
+
+ALREADY_TAKEN = """<h1>You've already taken the test</h1>
+<p>There is already an attempt for this email address, and each person can take the test once.</p>
+<p>If something went wrong (for example the connection dropped), contact the person who sent you
+this link: they can allow a retake.</p>"""
+
+ATTEMPT_COOKIE = "screening_attempt"
+EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 
 
 def make_app(args) -> web.Application:
@@ -360,7 +450,7 @@ def make_app(args) -> web.Application:
 
     def lookup(code: str):
         code = (code or "").strip().upper()
-        return code, candidates().get(code)
+        return code, candidate(code)
 
     async def ensure_worker(code: str, c: dict) -> Worker:
         w = workers.get(code)
@@ -382,50 +472,65 @@ def make_app(args) -> web.Application:
             await asyncio.sleep(10)
             st = settings()
             cands = candidates()
-            changed = False
             for code, w in list(workers.items()):
                 c = cands.get(code)
                 res = results_of(code, c) if c else None
-                if res and res.get("finished") and c.get("status") != "done":
+                if res and res.get("finished") and c.get("status") == "playing":
                     c["status"], c["finished"] = "done", res.get("finished_at")
-                    changed = True
+                    update_candidate(code, status="done", finished=c["finished"])
                 idle = w.clients == 0 and time.time() - w.last_seen > 60 * st["idle_timeout_min"]
                 done_idle = res and res.get("finished") and w.clients == 0 and time.time() - w.last_seen > 30
                 if not w.alive() or idle or done_idle:
                     w.stop()
                     del workers[code]
                     if c and c.get("status") == "playing" and not (res and res.get("finished")):
-                        c["status"] = "abandoned"
-                        changed = True
-            if changed:
-                _save(CANDIDATES, cands)
+                        update_candidate(code, status="abandoned")
 
     # ---- candidate pages
     async def index(request):
-        return page("Robot control test", JOIN_FORM.format(error="", code=html.escape(request.query.get("code", "")), name=""))
+        return page("Robot control test", JOIN_FORM.format(error="", name="", email=""))
+
+    def to_play(request, code):
+        """Off to the test, with the attempt's code in a cookie: the same browser may come back."""
+        resp = web.Response(status=302, headers={"Location": f"/play/{code}", "Cache-Control": "no-store"})
+        https = request.headers.get("X-Forwarded-Proto", request.scheme) == "https"
+        resp.set_cookie(ATTEMPT_COOKIE, code, max_age=7 * 24 * 3600, path="/", httponly=True,
+                        samesite="Lax", secure=https)
+        return resp
 
     async def join(request):
         form = await request.post()
-        code, c = lookup(form.get("code", ""))
-        name = (form.get("name") or "").strip()[:80]
+        name = " ".join((form.get("name") or "").split())[:80]
+        email = (form.get("email") or "").strip().lower()
 
         def again(msg):
             return page("Robot control test", JOIN_FORM.format(error=f'<p class="err">{html.escape(msg)}</p>',
-                                                              code=html.escape(code), name=html.escape(name)))
-        if c is None:
-            return again("This invite code doesn't exist. Check it and try again.")
+                                                              name=html.escape(name), email=html.escape(email)))
+        if not name:
+            return again("Please enter your name.")
+        if len(email) > 254 or not EMAIL_RE.fullmatch(email):
+            return again("Please enter a valid email address.")
         if not form.get("consent"):
             return again("Please agree to the recording to take the test.")
-        if c["status"] in ("done", "abandoned"):
-            return page("Robot control test", "<h1>Already taken</h1><p>This invite code has been used. "
-                                              "Contact the organiser if you think this is a mistake.</p>")
-        if c["status"] == "new":
-            cands = candidates()
-            cands[code].update(name=name, status="playing", started=time.strftime("%Y-%m-%d %H:%M:%S"))
-            _save(CANDIDATES, cands)
-            c = cands[code]
-        await ensure_worker(code, c)
-        raise web.HTTPFound(f"/play/{code}")
+        prev = attempt_of(email)
+        if prev is not None:
+            code, c = prev
+            if c["status"] == "playing" and secrets.compare_digest(request.cookies.get(ATTEMPT_COOKIE, ""), code):
+                await ensure_worker(code, c)          # the same browser coming back to its test
+                return to_play(request, code)
+            return page("Robot control test", ALREADY_TAKEN)
+        try:
+            code = new_candidate(time.strftime("%Y-%m"), name=name, email=email)
+        except sqlite3.IntegrityError:                # (the same email, a moment ago)
+            return page("Robot control test", ALREADY_TAKEN)
+        try:
+            await ensure_worker(code, candidate(code))
+        except web.HTTPException:
+            if code in workers:
+                workers.pop(code).stop()
+            delete_candidate(code)                   # (busy / didn't start: the attempt never began)
+            raise
+        return to_play(request, code)
 
     def static_page(file, code):
         text = (TEST_WEB / file).read_text(encoding="utf-8")
@@ -438,11 +543,11 @@ def make_app(args) -> web.Application:
         (batch "Test runs"), straight into the test (no form): for testing the test itself."""
         if not secrets.compare_digest(request.match_info["token"], test_token()):
             raise web.HTTPNotFound()
-        code = new_batch("Test runs", 1, request.query.get("only") or None)[0]
-        cands = candidates()
-        cands[code].update(name="test run", status="playing", started=time.strftime("%Y-%m-%d %H:%M:%S"))
-        _save(CANDIDATES, cands)
-        await ensure_worker(code, cands[code])
+        try:
+            code = new_candidate("Test runs", name="test run", only=request.query.get("only") or None)
+        except ValueError as e:
+            raise web.HTTPBadRequest(text=str(e))
+        await ensure_worker(code, candidate(code))
         raise web.HTTPFound(f"/play/{code}")
 
     async def play(request):
@@ -550,7 +655,8 @@ def make_app(args) -> web.Application:
             res = results_of(code, cand)
             sc = (res or {}).get("scores", {})
             mt = (res or {}).get("metrics", {})
-            r = {"code": code, "batch": cand["batch"], "name": cand.get("name", ""), "status": cand["status"],
+            r = {"code": code, "batch": cand["batch"], "name": cand.get("name", ""), "email": cand.get("email") or "",
+                 "status": cand["status"],
                  "phase": (res or {}).get("phase"), "started": cand.get("started"),
                  "finished": cand.get("finished") or (res or {}).get("finished_at"),
                  "practice_done": all(mt.get(k, {}).get("completed") for k in practice),
@@ -573,7 +679,8 @@ def make_app(args) -> web.Application:
         c = cfg()
         return web.json_response({"settings": settings(), "candidates": rows(), "config": c.public(),
                                   "config_path": _rel(c.path), "config_error": _cfg_state["error"],
-                                  "public_url": public_url(), "tunnel": bool(args.tunnel)})
+                                  "public_url": public_url(), "tunnel": bool(args.tunnel),
+                                  "test_path": f"/t/{test_token()}"})
 
     async def admin_csv(_):
         buf = io.StringIO()
@@ -584,15 +691,6 @@ def make_app(args) -> web.Application:
             wr.writerows(r)
         return web.Response(text=buf.getvalue(), content_type="text/csv",
                             headers={"Content-Disposition": 'attachment; filename="screening_results.csv"'})
-
-    async def admin_batch(request):
-        body = await request.json()
-        try:
-            codes = new_batch(str(body.get("name") or time.strftime("%Y-%m-%d")), int(body.get("n", 15)),
-                              body.get("only") or None)
-        except ValueError as e:
-            raise web.HTTPBadRequest(text=str(e))
-        return web.json_response({"codes": codes})
 
     async def admin_settings(request):
         """Lobby settings (settings.json) and the pass rule, which lives in the test's
@@ -617,18 +715,14 @@ def make_app(args) -> web.Application:
         return web.json_response({"settings": st, "config": cfg().public()})
 
     async def admin_reset(request):
-        """Let a candidate take the test again (keeps the old attempt's files, renamed)."""
+        """Let a candidate take the test again: the attempt (its row and folder) is kept, marked
+        'reset', and the email may join again (a new attempt with a new code)."""
         code, c = lookup(request.match_info["code"])
         if c is None:
             raise web.HTTPNotFound()
         if code in workers:
             workers.pop(code).stop()
-        d = session_dir(code, c) / "screen" / "attempt"
-        if d.exists():
-            d.rename(d.with_name(f"attempt_old_{time.strftime('%Y%m%d_%H%M%S')}"))
-        cands = candidates()
-        cands[code].update(status="new", started=None, finished=None)
-        _save(CANDIDATES, cands)
+        update_candidate(code, status="reset")
         return web.json_response({"ok": True})
 
     app["boot"] = int(time.time())
@@ -643,10 +737,12 @@ def make_app(args) -> web.Application:
     app.router.add_get("/phone-url/{code}", phone_url)
     app.router.add_get("/s/{code}/scene.json", scene_json)
     app.router.add_get("/s/{code}/ws", ws_relay)
+    # hand tracking on the server for a computer too slow to do it (tracker.py: a process per user)
+    tracker.add_routes(app, lambda code: code in workers and workers[code].alive())
+    app.router.add_get("/help", lambda _: web.FileResponse(TEST_WEB / "help.html", headers={"Cache-Control": "no-cache"}))
     app.router.add_get("/admin", local_only(admin))
     app.router.add_get("/admin/api", local_only(admin_api))
     app.router.add_get("/admin/results.csv", local_only(admin_csv))
-    app.router.add_post("/admin/batch", local_only(admin_batch))
     app.router.add_post("/admin/settings", local_only(admin_settings))
     app.router.add_post("/admin/reset/{code}", local_only(admin_reset))
     app.router.add_static("/static/", WEB_DIR)
@@ -657,31 +753,21 @@ def make_app(args) -> web.Application:
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    b = sub.add_parser("batch", help="create invite codes")
-    b.add_argument("name", help="batch name, e.g. 'October A'")
-    b.add_argument("--n", type=int, default=15)
     s = sub.add_parser("serve", help="start the lobby")
     s.add_argument("--port", type=int, default=8000)
     s.add_argument("--host", default="127.0.0.1",
                    help="127.0.0.1 (default): reachable through a tunnel only; 0.0.0.0: also on the local network")
     s.add_argument("--tunnel", action="store_true",
                    help="also start a Cloudflare quick tunnel (needs cloudflared) and show its public address")
-    b.add_argument("--only", default=None, help="test codes that run only this part, e.g. tilt")
     tn = sub.add_parser("tunnel", help="run the public tunnel on its own (its address survives lobby restarts)")
     tn.add_argument("--port", type=int, default=8000)
-    for p in (b, s, tn):
-        p.add_argument("--data", default=str(DATA), help="folder for codes, settings and results")
+    for p in (s, tn):
+        p.add_argument("--data", default=str(DATA), help="folder for the candidates database, settings and results")
     a = ap.parse_args(argv)
     set_data_dir(Path(a.data))
     if a.cmd == "tunnel":
         print(f"  Public tunnel to http://localhost:{a.port} (keep this window open)...", flush=True)
         run_tunnel(a.port)
-        return
-    if a.cmd == "batch":
-        codes = new_batch(a.name, a.n, a.only)
-        print(f"{len(codes)} invite codes for batch '{a.name}' (saved in {_rel(CANDIDATES)}):")
-        for c in codes:
-            print("  ", c)
         return
     if sys.platform == "win32":
         import ctypes
@@ -693,6 +779,7 @@ def main(argv=None):
     except C.ConfigError as e:
         print(f"\n  The test's configuration has problems; fix them and start again:\n{e}\n")
         sys.exit(1)
+    _db().close()                          # (made, and an old candidates.json moved in, now)
     print(f"  Test configuration: {_rel(c.path)} ({len(c.task_phases)} phases)")
     print(f"\n  Screening lobby: http://localhost:{a.port}   (results: http://localhost:{a.port}/admin)")
     if a.tunnel:

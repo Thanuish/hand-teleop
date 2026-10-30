@@ -23,15 +23,12 @@ install. Up to about 15 people at a time, run from your laptop.
 | Practice 2 | put a yellow cube into a green square | 2:30 | no |
 | Task 1: shapes | put a big square, a small square and a bar into their outlines (the bar must be turned 90°) | 4:00 | yes |
 | Task 2: sorting | red ball, blue cube, green cylinder into the bin of their colour | 3:00 | yes |
-| Task 3: tilt and pour | take a book out of its holder and lay it flat on a mat (tilt 90°); pour 4 balls from a clear cup into a bowl (tip the cup) and set the cup down upright | 7:00 | yes |
 | Ring on pegs | three rings stand in holders; hang each on the peg straight ahead of it, of its colour. The pegs lean at different angles (almost level, 60°, 45°), so each ring needs a different tilt. **In rounds:** when all three are on, they come back for the next round, until the time is up | 5:00 | yes |
 | Tower | blocks appear one at a time on a yellow square; stack them on a wooden platform as high as possible (6 blocks, 5 cm each) | 4:00 | yes |
 
 Practice and tasks 1–2 use the phone's position and its turn left / right; the gripper keeps
-pointing down. **Task 3 uses all six degrees of freedom**: tilting and twisting the phone also
-tilts and twists the gripper (the phone shows "TILT ON"). It's closest to real manipulation
-such as handling clothes: lifting things off a surface, turning them over, tipping and pouring.
-Which phases use full rotation is the `rotation` setting of each phase in
+pointing down. **Ring on pegs uses all six degrees of freedom**: the gripper also tilts (W S A D
+with the hand control), so each ring can be angled onto its peg. Which phases use full rotation is the `rotation` setting of each phase in
 `config/screening.toml`.
 
 **Physics:** the same as the VR blocks task: rigid MuJoCo bodies, light blocks (80 g), the UR5e's
@@ -79,8 +76,8 @@ Android phones from the last few years). iPhones can't do this in a browser.
 | Precision | 20 | grabs that lifted something ÷ grab attempts, less a third per drop, a quarter per wrong bin, a third per tower fall |
 | Economy | 10 | how directly the robot moved: the task's par path (`par_path_m`) × completion ÷ the path moved |
 
-**Overall** = the tasks' scores averaged by their `weight` (tilt-and-pour and rings count 1.5×:
-all six degrees of freedom). Then a **grade** (A ≥ 85, B ≥ 70, C ≥ 55, D ≥ 40, else F) and a
+**Overall** = the tasks' scores averaged by their `weight` (rings count 1.5×: all six degrees of
+freedom). Then a **grade** (A ≥ 85, B ≥ 70, C ≥ 55, D ≥ 40, else F) and a
 **skill profile**: the four parts over all tasks, 0–100, so you see *why* (e.g. completes
 everything but slowly). The admin page shows the grade and profile; hover a task's score for its
 parts. **Pass** = overall ≥ the pass mark (default 50, set on the admin page or in the

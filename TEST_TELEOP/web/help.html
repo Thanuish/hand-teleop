@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Robot control test: help</title>
+  <title>Sereact · Teleoperation test: help</title>
   <style>
     :root { --acc1: #7c5cff; --acc2: #22d3ee; --line: rgba(255,255,255,.09); --text: #e8ebf2; --muted: #aab1c0; }
     html { background: #0e1016; }
@@ -32,10 +32,26 @@
     td:first-child { white-space: nowrap; width: 1%; padding-right: 16px; }
     a { color: #9bd8ff; }
   </style>
+  <link rel="stylesheet" href="/test-static/brand.css" /><link rel="icon" type="image/png" href="/test-static/sereact-logo.png">
+  <style>
+    /* Sereact look (brand.css) */
+    html { background: var(--sr-navy); }
+    body { font-family: var(--sr-font); color: var(--sr-text);
+           background: radial-gradient(1000px 600px at 20% 0%, rgba(47,107,255,.2), transparent 60%),
+                       radial-gradient(900px 600px at 100% 40%, rgba(123,92,255,.14), transparent 60%), var(--sr-navy); }
+    header { flex-direction: column; align-items: flex-start; gap: 18px; }
+    .logo { display: none; }
+    nav a { border-color: var(--sr-line); color: #cfd8ff; }
+    nav a:hover { border-color: var(--sr-violet-2); background: var(--sr-grad-soft); }
+    section { background: var(--sr-glass); border-color: var(--sr-line); box-shadow: var(--sr-shadow); }
+    h2 { color: #fff; } p, li { color: #cbd3e6; } .sub { color: var(--sr-muted); }
+    td { border-top-color: var(--sr-line); }
+  </style>
 </head>
 <body>
 <main>
-  <header><div class="logo">✋</div><h1>Help</h1></header>
+  <header><span class="sr-brand"><span class="sr-logo" aria-hidden="true"></span><span class="sr-mark">sere<b>act</b></span><span class="sr-divider"></span><span class="sr-product">Teleoperation assessment</span></span>
+    <h1>Help</h1></header>
   <p class="sub">Everything you need for the robot control test. Keep this tab open next to the test if you like.</p>
 
   <nav>
@@ -94,6 +110,10 @@
       <tr><td><kbd>H</kbd></td><td>the gripper back to its start position</td></tr>
       <tr><td><kbd>SPACE</kbd></td><td>closes / opens the gripper too, if a pinch is awkward for you</td></tr>
       <tr><td><kbd>C</kbd></td><td>a bigger camera picture</td></tr>
+      <tr><td>🖱 drag</td><td>turn the 3D view to look around the table (see how high the gripper is, look behind things)</td></tr>
+      <tr><td>🖱 scroll</td><td>zoom in and out (on a touchpad: pinch); <kbd>R</kbd> puts the view back</td></tr>
+      <tr><td>ⓘ Task info</td><td>during a task: read its description again (the clock keeps running)</td></tr>
+      <tr><td>Skip / Finish</td><td>end a task early: what you've done so far counts</td></tr>
     </table>
     <p>The see-through gripper shows straight away where the robot is going; the robot follows it a moment later.
        The ring on the table under the gripper turns green when it is low enough to grab.</p>

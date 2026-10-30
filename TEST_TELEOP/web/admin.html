@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Screening results</title>
+  <title>Sereact · Screening results</title>
   <style>
     body { margin: 0; padding: 22px; background: #15171c; color: #e8e8e8; font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
     h1 { font-size: 22px; margin: 0 0 4px; } h2 { font-size: 16px; margin: 22px 0 8px; }
@@ -25,8 +25,31 @@
     .st.playing { background: #2f6fde; } .st.done { background: #2d6b45; } .st.abandoned { background: #7a4a1f; }
     tr.reset td { opacity: .5; }
   </style>
+  <link rel="stylesheet" href="/test-static/brand.css" /><link rel="icon" type="image/png" href="/test-static/sereact-logo.png">
+  <style>
+    /* Sereact look (brand.css) */
+    body { background: radial-gradient(1200px 600px at 10% -10%, rgba(47,107,255,.18), transparent 60%), var(--sr-navy);
+           color: var(--sr-text); font: 14px/1.5 var(--sr-font); min-height: 100vh; box-sizing: border-box; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px;
+              padding-bottom: 16px; border-bottom: 1px solid var(--sr-line); }
+    h1 { font-size: 24px; font-weight: 700; } h2 { font-weight: 600; color: #dfe5f5; }
+    .muted { color: var(--sr-faint); }
+    .panel { background: var(--sr-glass); border-color: var(--sr-line); border-radius: 16px; }
+    input { background: rgba(7,11,24,.7); border-color: var(--sr-line); border-radius: 10px; color: var(--sr-text); }
+    button, a.btn { background: var(--sr-grad); border-radius: 10px; font-weight: 600; }
+    button.secondary { background: rgba(160,180,255,.12); border: 1px solid var(--sr-line); }
+    table { background: var(--sr-glass); border-radius: 16px; overflow: hidden; }
+    th { color: var(--sr-muted); font-size: 12px; letter-spacing: .06em; text-transform: uppercase; background: rgba(47,107,255,.06); }
+    th, td { border-bottom-color: var(--sr-line); }
+    tbody tr:hover td { background: rgba(123,92,255,.06); }
+    .st { background: rgba(160,180,255,.14); } .st.playing { background: var(--sr-blue); } .st.done { background: #0f5d4a; }
+    .pass { color: var(--sr-ok); } .fail { color: var(--sr-bad); }
+    .grade { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; background: rgba(160,180,255,.08); }
+  </style>
 </head>
 <body>
+  <div class="topbar"><span class="sr-brand"><span class="sr-logo" aria-hidden="true"></span><span class="sr-mark">sere<b>act</b></span><span class="sr-divider"></span>
+    <span class="sr-product">Teleoperation assessment · admin</span></span></div>
   <h1>Screening results</h1>
   <div class="muted">Updates every few seconds. Send candidates the public address of your tunnel: they enter their name and email (one attempt per email).</div>
   <div class="panel"><b>Public address for candidates:</b> <span id="publicUrl" style="font-family:ui-monospace,monospace"></span></div>
@@ -40,8 +63,9 @@
       <span class="muted" id="saved"></span>
     </div>
     <div class="muted" style="margin-top:6px">
-      Score per task (0-100): steps completed + time left (if completed) + grasp efficiency (minus a share per drop); weights in the configuration.
-      Overall = mean of the scored tasks. Reach eff. = straight-line distance / distance moved in the reach practice (1 = perfectly direct).
+      Score per task (0-100): completion 50 + speed against the task's par time 20 + precision (grasps, drops, wrong bins, falls) 20
+      + economy of motion 10; hover a task's score for its parts. Overall = the tasks' weighted mean, then a grade (A ≥ 85 … F) and the
+      skill profile C · S · P · E. "skipped" / "finished early": the candidate ended that task themselves (what was done counts).
       The test (phases, objects, scoring, pass mark) is defined in <code id="configPath"></code>; the pass mark saved here goes into that file.
     </div>
   </div>

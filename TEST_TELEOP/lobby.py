@@ -346,16 +346,27 @@ class Worker:
 # ---------------------------------------------------------------- pages
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title>
+<link rel="stylesheet" href="/test-static/brand.css"><link rel="icon" type="image/png" href="/test-static/sereact-logo.png">
 <style>
- body {{ margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
-        background:#15171c; color:#e8e8e8; font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }}
- .card {{ background:#1f2229; border:1px solid #333; border-radius:14px; padding:28px 32px; max-width:560px; margin:16px; }}
- h1 {{ font-size:22px; margin:0 0 12px; }} p {{ color:#c4c4c4; }}
- input[type=text], input[type=email] {{ width:100%; box-sizing:border-box; padding:10px 12px; margin:6px 0 14px; font:inherit;
-        background:#111; color:#eee; border:1px solid #444; border-radius:8px; }}
- button {{ background:#2f6fde; color:#fff; border:0; border-radius:8px; padding:11px 20px; font:inherit; cursor:pointer; }}
- .err {{ color:#ff8080; }} label {{ color:#c4c4c4; }} small {{ color:#888; }} a {{ color:#8bf; }}
-</style></head><body><div class="card">{body}</div></body></html>"""
+ body {{ margin:0; min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; box-sizing:border-box;
+        padding:16px; color:var(--sr-text); font:16px/1.6 var(--sr-font);
+        background: radial-gradient(1000px 640px at 15% 0%, rgba(47,107,255,.24), transparent 60%),
+                    radial-gradient(900px 600px at 100% 100%, rgba(123,92,255,.22), transparent 60%), var(--sr-navy); }}
+ .card {{ background:var(--sr-glass); border:1px solid var(--sr-line); border-radius:22px; padding:30px 34px; max-width:560px;
+         width:100%; box-sizing:border-box; box-shadow:var(--sr-shadow); backdrop-filter:blur(14px); }}
+ .card > .sr-brand {{ margin-bottom:22px; }}
+ h1 {{ font-size:26px; margin:0 0 12px; }} p {{ color:#cbd3e6; }}
+ input[type=text], input[type=email] {{ width:100%; box-sizing:border-box; padding:12px 14px; margin:6px 0 16px; font:inherit;
+        background:rgba(7,11,24,.7); color:#eef1f8; border:1px solid var(--sr-line); border-radius:12px; outline:none; }}
+ input[type=text]:focus, input[type=email]:focus {{ border-color:var(--sr-violet-2); box-shadow:0 0 0 4px rgba(123,92,255,.18); }}
+ button {{ background:var(--sr-grad); color:#fff; border:0; border-radius:14px; padding:13px 26px; font:600 16px var(--sr-font);
+          cursor:pointer; box-shadow:0 10px 28px rgba(64,90,255,.35); }}
+ button:hover {{ filter:brightness(1.08); }}
+ .err {{ color:var(--sr-bad); }} label {{ color:#cbd3e6; font-size:14px; font-weight:500; }} small {{ color:var(--sr-faint); }}
+ .foot {{ margin-top:18px; font-size:12px; color:var(--sr-faint); }}
+</style></head><body><div class="card">
+<span class="sr-brand"><span class="sr-logo" aria-hidden="true"></span><span class="sr-mark">sere<b>act</b></span><span class="sr-divider"></span><span class="sr-product">Teleoperation assessment</span></span>
+{body}</div><div class="foot">© Sereact GmbH</div></body></html>"""
 
 
 def page(title, body, status=200):
@@ -363,7 +374,7 @@ def page(title, body, status=200):
                         status=status, headers={"Cache-Control": "no-store"})
 
 
-JOIN_FORM = """<h1>Robot control test</h1>
+JOIN_FORM = """<h1>Robot teleoperation test</h1>
 <p>You will control a robot gripper in a simulation with your <b>bare hand</b> in front of your
 webcam, and do a few short manipulation tasks after a practice round. It takes about 20 minutes.</p>
 <p><b>You need:</b> a computer with a webcam, Chrome or Edge, good light on your hand. A short setup
@@ -488,7 +499,7 @@ def make_app(args) -> web.Application:
 
     # ---- candidate pages
     async def index(request):
-        return page("Robot control test", JOIN_FORM.format(error="", name="", email=""))
+        return page("Sereact · Teleoperation test", JOIN_FORM.format(error="", name="", email=""))
 
     def to_play(request, code):
         """Off to the test, with the attempt's code in a cookie: the same browser may come back."""
@@ -504,7 +515,7 @@ def make_app(args) -> web.Application:
         email = (form.get("email") or "").strip().lower()
 
         def again(msg):
-            return page("Robot control test", JOIN_FORM.format(error=f'<p class="err">{html.escape(msg)}</p>',
+            return page("Sereact · Teleoperation test", JOIN_FORM.format(error=f'<p class="err">{html.escape(msg)}</p>',
                                                               name=html.escape(name), email=html.escape(email)))
         if not name:
             return again("Please enter your name.")
@@ -518,11 +529,11 @@ def make_app(args) -> web.Application:
             if c["status"] == "playing" and secrets.compare_digest(request.cookies.get(ATTEMPT_COOKIE, ""), code):
                 await ensure_worker(code, c)          # the same browser coming back to its test
                 return to_play(request, code)
-            return page("Robot control test", ALREADY_TAKEN)
+            return page("Sereact · Teleoperation test", ALREADY_TAKEN)
         try:
             code = new_candidate(time.strftime("%Y-%m"), name=name, email=email)
         except sqlite3.IntegrityError:                # (the same email, a moment ago)
-            return page("Robot control test", ALREADY_TAKEN)
+            return page("Sereact · Teleoperation test", ALREADY_TAKEN)
         try:
             await ensure_worker(code, candidate(code))
         except web.HTTPException:
@@ -560,14 +571,14 @@ def make_app(args) -> web.Application:
     async def phone(request):
         code, c = lookup(request.match_info["code"])
         if c is None or c["status"] != "playing":
-            return page("Robot control test", "<h1>Link not active</h1><p>Open the test on your computer first.</p>")
+            return page("Sereact · Teleoperation test", "<h1>Link not active</h1><p>Open the test on your computer first.</p>")
         return static_page("phone.html", code)
 
     async def hand_camera(request):
         """A phone as the hand camera (any phone: only its camera and browser are needed)."""
         code, c = lookup(request.match_info["code"])
         if c is None or c["status"] != "playing":
-            return page("Robot control test", "<h1>Link not active</h1><p>Open the test on your computer first.</p>")
+            return page("Sereact · Teleoperation test", "<h1>Link not active</h1><p>Open the test on your computer first.</p>")
         return static_page("hand.html", code)
 
     async def qr_hand(request):
@@ -665,6 +676,9 @@ def make_app(args) -> web.Application:
             for p in c.scored_phases:           # a score and steps column per scored task (its parts on hover)
                 r[p.key] = sc.get(p.key)
                 r[f"{p.key}_steps"] = f"{mt[p.key]['steps_done']}/{mt[p.key]['steps_total']}" if p.key in mt else ""
+                ended = mt.get(p.key, {}).get("ended_by")          # (the candidate skipped / finished it early)
+                if ended:
+                    r[f"{p.key}_steps"] += " skipped" if ended == "skip" else " finished early"
                 r[f"{p.key}_parts"] = bd.get(p.key)
             skills = sc.get("skills") or {}
             for k in ("completion", "speed", "precision", "economy"):

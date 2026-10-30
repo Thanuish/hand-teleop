@@ -27,6 +27,18 @@ function applyBudget() {
   renderer.setSize(window.innerWidth, window.innerHeight);
 }
 applyBudget();
+// The graphics chip reset (a context loss: too much at once, a driver hiccup): three.js restores
+// the context by itself; then draw lightly (pixels and frames down), so an overloaded chip
+// recovers instead of resetting again (the browser blocks WebGL for the page after a few).
+// Pages hear of it through 'teleop-context-lost' / 'teleop-context-restored'.
+renderer.domElement.addEventListener('webglcontextlost', () => {
+  Object.assign(BUDGET, { maxPixels: Math.min(BUDGET.maxPixels, 1.0e6), maxFps: Math.min(BUDGET.maxFps, 30) });
+  window.dispatchEvent(new CustomEvent('teleop-context-lost'));
+});
+renderer.domElement.addEventListener('webglcontextrestored', () => {
+  applyBudget();
+  window.dispatchEvent(new CustomEvent('teleop-context-restored'));
+});
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;   // photographic highlight roll-off
 renderer.toneMappingExposure = 1.0;

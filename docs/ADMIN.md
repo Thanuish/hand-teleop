@@ -17,7 +17,7 @@ For the people who run rounds of the test and read the results. (How the system 
    - a pinch (close the gripper), then a pinch again (open it);
    - Q and E.
 3. **The practice** (not scored): pick up a cube and put it in a square.
-4. **The scored tasks:** shapes, sort by colour, tilt and pour, rings on pegs, tower. Each starts with a card
+4. **The scored tasks:** shapes, sort by colour, rings on pegs, tower. Each starts with a card
    (what to do, which controls, the time limit) for 7 s, then a 3-second countdown.
 5. **Done:** a thank-you page. The results are saved straight away.
 

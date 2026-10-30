@@ -66,13 +66,19 @@ grab_height = 0.06             # they turn green when the fingertips are this lo
 color = "#ffd24a"
 grab_color = "#4cd07d"
 
+[table_wall]                   # a low rim around the table top: balls and knocked blocks stay on the table
+enabled = true
+height = 0.04                  # [m]
+thickness = 0.015              # [m]
+
 [reach_target]                 # the glowing ball of the reach steps
 diameter = 0.044
 color = [0.2, 1.0, 0.4, 0.55]
 
 # ---------------------------------------------------------------------------- timing and checks
 [timing]
-countdown_s = 10.0             # before each timed phase: its card (what to do, the controls) for 7 s, then a 3 s countdown
+read_first = true              # each task's description first (the clock stopped) until the candidate presses Start
+countdown_s = 3.0              # then this countdown before the clock runs
 pair_hold_s = 1.0              # the phone must be connected this long before the test goes on
 
 [tolerances]
@@ -319,25 +325,25 @@ color = [0.15, 0.8, 0.35]
 [markers.slot_big_square]
 kind = "slot"
 object = "big_square"
-pos = [0.60, 0.13]
+pos = [0.60, 0.16]
 symmetry_deg = 90
-margin = 0.006
+margin = 0.015                 # [m] room around the shape on each side
 color = [0.25, 0.25, 0.28]
 
 [markers.slot_small_square]
 kind = "slot"
 object = "small_square"
-pos = [0.60, 0.04]
+pos = [0.60, 0.05]
 symmetry_deg = 90
-margin = 0.006
+margin = 0.015
 color = [0.25, 0.25, 0.28]
 
 [markers.slot_bar]
 kind = "slot"
 object = "bar"
-pos = [0.60, -0.06]
+pos = [0.60, -0.07]
 symmetry_deg = 180
-margin = 0.006
+margin = 0.015
 color = [0.25, 0.25, 0.28]
 
 [markers.bin_red]
@@ -566,25 +572,6 @@ steps = [
   { type = "place_in_bin", object = "red_ball", bin = "bin_red", label = "red ball" },
   { type = "place_in_bin", object = "blue_cube", bin = "bin_blue", label = "blue cube" },
   { type = "place_in_bin", object = "green_cylinder", bin = "bin_green", label = "green cylinder" },
-]
-
-[[phases]]
-key = "tilt"
-title = "Task 3: tilt and pour"
-scored = true
-time_limit_s = 420
-par_time_s = 150
-par_path_m = 3.5
-weight = 1.5                   # tilting and pouring (all six degrees of freedom) counts more
-rotation = "full"
-text = "Now the gripper also tilts: W and S tilt it forward and back, A and D sideways, Q and E turn it. Take the book out of its holder and lay it flat on the green mat. Then pour the balls from the cup into the bowl and set the cup down upright."
-objects = ["book", "cup", "ball"]
-markers = ["holder", "mat", "bowl"]
-steps = [
-  { id = "book_out", type = "remove_from", object = "book", holder = "holder", distance = 0.07, label = "book out of the holder" },
-  { id = "book_flat", type = "lay_flat", object = "book", zone = "mat", after = "book_out", label = "book flat on the mat" },
-  { id = "poured", type = "pour_into", objects = "ball", container = "bowl", count = 3, label = "balls in the bowl" },
-  { id = "cup_up", type = "set_upright", object = "cup", after = "poured", label = "cup upright again" },
 ]
 
 [[phases]]

@@ -157,6 +157,7 @@ class Config:
     hand_rotation_scale: float   # gripper turn per hand turn for a camera-tracked hand
     view: dict                   # eye, look, fov (MuJoCo frame, as main.js wants it)
     depth_cues: dict
+    table_wall: dict             # a low rim around the table top (balls don't roll off): enabled, height, thickness
     timing: dict
     tol: dict
     scoring: dict
@@ -349,7 +350,7 @@ def set_values(updates: dict, p: Path | str | None = None) -> Config:
 
 def parse(raw: dict, p: Path | str = "<config>") -> Config:
     c = _Checker()
-    c.keys(raw, "file", ("version", "arm", "controls", "view", "side_view", "depth_cues", "timing", "tolerances",
+    c.keys(raw, "file", ("version", "arm", "controls", "view", "side_view", "depth_cues", "table_wall", "timing", "tolerances",
                          "scoring", "texts", "reach_target", "materials", "objects", "markers", "phases"),
            required=("arm", "objects", "phases"))
     if raw.get("version", 1) != 1:
@@ -400,6 +401,11 @@ def parse(raw: dict, p: Path | str = "<config>") -> Config:
                         fov=c.num(sv, "fov_deg", "side_view", 35, lo=10, hi=100))
     if view["eye"] == view["look"]:
         c.err("view", "eye and look_at are the same point")
+    tw = raw.get("table_wall", {})
+    c.keys(tw, "table_wall", ("enabled", "height", "thickness"))
+    table_wall = dict(enabled=c.flag(tw, "enabled", "table_wall", True),
+                      height=c.num(tw, "height", "table_wall", 0.04, lo=0.005, hi=0.3),
+                      thickness=c.num(tw, "thickness", "table_wall", 0.015, lo=0.003, hi=0.1))
     dc = raw.get("depth_cues", {})
     c.keys(dc, "depth_cues", ("enabled", "grab_height", "color", "grab_color"))
     depth_cues = dict(enabled=c.flag(dc, "enabled", "depth_cues", True),
@@ -409,9 +415,10 @@ def parse(raw: dict, p: Path | str = "<config>") -> Config:
 
     # ---- timing, tolerances, scoring, texts
     t = raw.get("timing", {})
-    c.keys(t, "timing", ("countdown_s", "pair_hold_s"))
+    c.keys(t, "timing", ("countdown_s", "pair_hold_s", "read_first"))
     timing = dict(countdown=c.num(t, "countdown_s", "timing", 3.0, lo=0, hi=30),
-                  pair_hold=c.num(t, "pair_hold_s", "timing", 1.0, lo=0, hi=30))
+                  pair_hold=c.num(t, "pair_hold_s", "timing", 1.0, lo=0, hi=30),
+                  read_first=c.flag(t, "read_first", "timing", True))
     tl = raw.get("tolerances", {})
     tol_keys = dict(reach=0.03, slot_distance=0.016, slot_angle_deg=15.0, rest_speed=0.03, rest_height=0.008,
                     held_lift=0.02, held_distance=0.08, container_margin=0.01, flat_within_deg=25.842,
@@ -739,7 +746,7 @@ def parse(raw: dict, p: Path | str = "<config>") -> Config:
         raise ConfigError(p, c.problems)
     return Config(path=Path(p), arm=arm, motion_scale=motion_scale, smoothing=smoothing, hand_smoothing=hand_smoothing, hand_motion_scale=hand_motion_scale,
                   hand_rotation_scale=hand_rotation_scale,
-                  view=view, depth_cues=depth_cues,
+                  view=view, depth_cues=depth_cues, table_wall=table_wall,
                   timing=timing, tol=tol, scoring=scoring, texts=texts, reach_target=reach_target,
                   materials=materials, objects=objects, groups=groups, markers=markers, phases=phases)
 

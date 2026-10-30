@@ -205,7 +205,10 @@ class ScreenGame:
         self._prev_target = None
         self._prev_quat = None
         self.t0 = None
-        self.intro_until = d.time + self.cfg.timing["countdown"] if ph.kind == "task" else None
+        # [timing] read_first: the task's description first, the clock stopped and the robot still,
+        # until the candidate presses Start (task_ready); then the countdown
+        self.waiting = ph.kind == "task" and self.cfg.timing["read_first"]
+        self.intro_until = d.time + self.cfg.timing["countdown"] if ph.kind == "task" and not self.waiting else None
         self._glitch0 = self.sim.arms.teleop[s].glitches
         if ph.kind == "task":
             self.metrics[ph.key] = self._new_metrics(len(ph.steps))
@@ -311,6 +314,24 @@ class ScreenGame:
             t = round(self.d.time - self.t0, 2) if self.t0 is not None else 0.0
             mt.setdefault("events", []).append([t, "home"])
 
+    def task_ready(self):
+        """The candidate has read the task's description and pressed Start: the countdown begins."""
+        if getattr(self, "waiting", False) and self.phase.kind == "task" and not self.finished:
+            self.waiting = False
+            self.intro_until = self.d.time + self.cfg.timing["countdown"]
+
+    def end_task(self, how: str):
+        """The candidate ends the running task early: "skip" (too hard) or "finish" (done
+        enough). What was done so far counts, scored as if the time had run out; the task
+        records how it ended (ended_by: "skip" / "finish"). Not during the countdown."""
+        ph = self.phase
+        if ph.kind != "task" or self.finished or self.intro_until is not None or self.t0 is None:
+            return
+        mt = self.metrics[ph.key]
+        mt["ended_by"] = "skip" if how == "skip" else "finish"
+        mt.setdefault("events", []).append([round(self.d.time - self.t0, 2), mt["ended_by"]])
+        self._end_phase(ph.repeat and mt.get("rounds", 0) > 0, early=True)
+
     # ------------------------------------------------------------ tower (stack)
     def _next_block(self):
         """The next block onto the supply zone (if any are left)."""
@@ -390,11 +411,11 @@ class ScreenGame:
         self.intro_until = None
         self.sim.recorder.start(self.d.time)
 
-    def _end_phase(self, completed: bool):
+    def _end_phase(self, completed: bool, early: bool = False):
         key = self.phase.key
         mt = self.metrics[key]
         mt["completed"] = completed
-        mt["timed_out"] = not completed or self.phase.repeat
+        mt["timed_out"] = not early and (not completed or self.phase.repeat)
         mt["time_s"] = round(self.d.time - self.t0, 2)
         if self.reaching:
             mt["reach_log"] = self.reach_log
@@ -402,7 +423,8 @@ class ScreenGame:
             self.sim.save_episode(success=completed)
             mt["episode"] = self.sim.last_saved
         tx = self.cfg.texts
-        self.message = f"{tx['well_done'] if completed else tx['time_up']} {tx['next']} {self.phases[self.i + 1].title}"
+        head = tx["well_done"] if completed else ("Task ended." if early else tx["time_up"])
+        self.message = f"{head} {tx['next']} {self.phases[self.i + 1].title}"
         self.i += 1
         self._setup_phase()
         if self.phase.kind == "done":
@@ -426,6 +448,9 @@ class ScreenGame:
                     self.write_results()
             else:
                 self.paired_since = None
+            return
+        if self.waiting:                               # (reading the description: the robot holds still)
+            self.sim.arms.frozen = {self.side}
             return
         if self.intro_until is not None:
             # buzz wire: the arm holds still until the start (the loop stays around the wire)
@@ -719,7 +744,8 @@ class ScreenGame:
         mt = self.metrics.get(p.key, {})
         intro = max(0.0, self.intro_until - d.time) if self.intro_until is not None else 0.0
         return dict(phase=p.key, kind=p.kind, index=self.i, count=len(self.phases), title=p.title, text=p.text,
-                    scored=p.scored, limit=p.limit, intro=round(intro, 1), rotation=p.rotation, arm=self.side,
+                    scored=p.scored, limit=p.limit, intro=round(intro, 1), waiting=bool(self.waiting),
+                    rotation=p.rotation, arm=self.side,
                     time=round(d.time - self.t0, 1) if self.t0 is not None else 0.0,
                     steps_done=mt.get("steps_done", 0), steps_total=mt.get("steps_total", 0),
                     steps=[dict(label=st.label, done=bool(self.done.get(st.id))) for st in p.steps],

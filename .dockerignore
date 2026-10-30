@@ -1,0 +1,14 @@
+# (not in the image: local data, environments, caches, the editor's files)
+.git
+.github
+.claude
+.venv
+data
+certs
+**/__pycache__
+**/*.pyc
+assets/generated
+assets/models
+*.mp4
+MUJOCO_LOG.TXT
+*.bat

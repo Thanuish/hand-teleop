@@ -56,7 +56,9 @@ DATA = ROOT / "data" / "screening"
 CANDIDATES = DATA / "candidates.json"                 # (before the database: moved into it once)
 DB = DATA / "screening.db"
 SETTINGS = DATA / "settings.json"
-DEFAULT_SETTINGS = {"max_concurrent": 15, "idle_timeout_min": 20}
+# accepting: new candidates may start (off: "closed for a short update", for a deploy: tests
+# already running go on). The environment can set the starting values (a container: MAX_CONCURRENT)
+DEFAULT_SETTINGS = {"max_concurrent": int(os.environ.get("MAX_CONCURRENT", 15)), "idle_timeout_min": 20, "accepting": True}
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"     # no 0/O, 1/I
 
 
@@ -493,6 +495,9 @@ ALREADY_TAKEN = """<h1>You've already taken the test</h1>
 <p>If something went wrong (for example the connection dropped), contact the person who sent you
 this link: they can allow a retake.</p>"""
 
+CLOSED = """<h1>Back in a few minutes</h1>
+<p>The test is closed for a short update. Please try again in a few minutes: your invitation is still valid.</p>"""
+
 ATTEMPT_COOKIE = "screening_attempt"
 EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 
@@ -537,7 +542,10 @@ def make_app(args) -> web.Application:
                          daemon=True).start()
 
     def public_url():
-        """The in-process tunnel's address, or the one a separate `tunnel` process wrote."""
+        """The site's public address: PUBLIC_URL (hosted: e.g. https://teleop.sereact.ai), else
+        the in-process tunnel's, else the one a separate `tunnel` process wrote."""
+        if os.environ.get("PUBLIC_URL"):
+            return os.environ["PUBLIC_URL"].rstrip("/")
         if tunnel_state["url"]:
             return tunnel_state["url"]
         info = _load(tunnel_file(), None)
@@ -546,13 +554,41 @@ def make_app(args) -> web.Application:
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
 
+    ADMIN_USER, ADMIN_PASSWORD = os.environ.get("ADMIN_USER", "admin"), os.environ.get("ADMIN_PASSWORD", "")
+    # ADMIN_LOCAL_OPEN=0 (the container): always the sign-in, also from this machine (a proxy on the
+    # same server forwarding to 127.0.0.1 would otherwise look local)
+    LOCAL_OPEN = os.environ.get("ADMIN_LOCAL_OPEN", "1") != "0"
+
     def local_only(handler):
+        """The admin pages: open on this computer (a request from itself, not through a proxy or
+        tunnel); from anywhere else only with ADMIN_USER / ADMIN_PASSWORD (the browser's sign-in
+        box, HTTP Basic: the site is https); without a password set, not from anywhere else."""
         async def wrapped(request):
-            if request.remote not in ("127.0.0.1", "::1") or "cf-connecting-ip" in request.headers \
-                    or "x-forwarded-for" in request.headers:
-                return web.Response(status=403, text="the admin pages only open on the screening PC")
+            local = LOCAL_OPEN and request.remote in ("127.0.0.1", "::1") and "cf-connecting-ip" not in request.headers \
+                and "x-forwarded-for" not in request.headers
+            if not local:
+                if not ADMIN_PASSWORD:
+                    return web.Response(status=403, text="The admin pages are closed here: set ADMIN_PASSWORD to open them.")
+                ok = False
+                auth = request.headers.get("Authorization", "")
+                if auth.startswith("Basic "):
+                    import base64
+                    try:
+                        user, _, pw = base64.b64decode(auth[6:]).decode("utf-8").partition(":")
+                        ok = secrets.compare_digest(user, ADMIN_USER) & secrets.compare_digest(pw, ADMIN_PASSWORD)
+                    except (ValueError, UnicodeDecodeError):
+                        ok = False
+                if not ok:
+                    return web.Response(status=401, text="Sign in to the screening admin.",
+                                        headers={"WWW-Authenticate": 'Basic realm="Sereact screening admin", charset="UTF-8"'})
             return await handler(request)
         return wrapped
+
+    async def healthz(_):
+        """For the load balancer / Docker: alive, and how full."""
+        busy = sum(1 for w in workers.values() if w.alive())
+        st = settings()
+        return web.json_response({"ok": True, "running": busy, "capacity": st["max_concurrent"], "accepting": st["accepting"]})
 
     def public_base(request) -> str:
         proto = request.headers.get("X-Forwarded-Proto", request.scheme)
@@ -598,6 +634,8 @@ def make_app(args) -> web.Application:
 
     # ---- candidate pages
     async def index(request):
+        if not settings()["accepting"]:
+            return page("Sereact · Teleoperation test", CLOSED)
         return page("Sereact · Teleoperation test", JOIN_FORM.format(error="", name="", email=""))
 
     def to_play(request, code):
@@ -629,6 +667,8 @@ def make_app(args) -> web.Application:
                 await ensure_worker(code, c)          # the same browser coming back to its test
                 return to_play(request, code)
             return page("Sereact · Teleoperation test", ALREADY_TAKEN)
+        if not settings()["accepting"]:                # (paused for an update: no new tests)
+            return page("Sereact · Teleoperation test", CLOSED)
         try:
             code = new_candidate(time.strftime("%Y-%m"), name=name, email=email)
         except sqlite3.IntegrityError:                # (the same email, a moment ago)
@@ -944,7 +984,9 @@ def make_app(args) -> web.Application:
     app.router.add_get("/s/{code}/scene.json", scene_json)
     app.router.add_get("/s/{code}/ws", ws_relay)
     # hand tracking on the server for a computer too slow to do it (tracker.py: a process per user)
-    tracker.add_routes(app, lambda code: code in workers and workers[code].alive())
+    tracker.add_routes(app, lambda code: code in workers and workers[code].alive(),
+                       delegate=os.environ.get("TRACKER_DELEGATE", "cpu"))
+    app.router.add_get("/healthz", healthz)
     app.router.add_get("/help", lambda _: web.FileResponse(TEST_WEB / "help.html", headers={"Cache-Control": "no-cache"}))
     app.router.add_get("/admin", local_only(admin))
     app.router.add_get("/admin/api", local_only(admin_api))
@@ -965,15 +1007,17 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("serve", help="start the lobby")
-    s.add_argument("--port", type=int, default=8000)
-    s.add_argument("--host", default="127.0.0.1",
+    # (the environment gives the defaults: a container sets HOST=0.0.0.0, PORT, DATA_DIR)
+    s.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8000)))
+    s.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"),
                    help="127.0.0.1 (default): reachable through a tunnel only; 0.0.0.0: also on the local network")
     s.add_argument("--tunnel", action="store_true",
                    help="also start a Cloudflare quick tunnel (needs cloudflared) and show its public address")
     tn = sub.add_parser("tunnel", help="run the public tunnel on its own (its address survives lobby restarts)")
     tn.add_argument("--port", type=int, default=8000)
     for p in (s, tn):
-        p.add_argument("--data", default=str(DATA), help="folder for the candidates database, settings and results")
+        p.add_argument("--data", default=os.environ.get("DATA_DIR", str(DATA)),
+                       help="folder for the candidates database, settings and results (env DATA_DIR)")
     a = ap.parse_args(argv)
     set_data_dir(Path(a.data))
     if a.cmd == "tunnel":
@@ -993,7 +1037,10 @@ def main(argv=None):
     _db().close()                          # (made, and an old candidates.json moved in, now)
     print(f"  Test configuration: {_rel(c.path)} ({len(c.task_phases)} phases)")
     print(f"\n  Screening lobby: http://localhost:{a.port}   (results: http://localhost:{a.port}/admin)")
-    if a.tunnel:
+    if os.environ.get("PUBLIC_URL"):
+        print(f"  Public address: {os.environ['PUBLIC_URL']}   (admin: /admin, "
+              f"{'sign-in: ADMIN_USER / ADMIN_PASSWORD' if os.environ.get('ADMIN_PASSWORD') else 'closed: no ADMIN_PASSWORD set'})\n")
+    elif a.tunnel:
         print("  Starting the public tunnel (its address appears below and on the admin page)...")
     else:
         print("  Candidates need a public https:// address: the tunnel (a separate window:")

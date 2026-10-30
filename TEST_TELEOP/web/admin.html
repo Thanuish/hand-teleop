@@ -59,6 +59,13 @@
     <!-- ===================================================== settings -->
     <section id="tab-settings" class="hidden">
       <div class="card pad">
+        <h3>New candidates</h3>
+        <div class="row"><label class="toggle"><input type="checkbox" id="accepting"> Accept new candidates</label>
+          <span class="muted">Off: the link says "closed for a short update" (for a deploy); tests already running go on.</span></div>
+        <div class="row" style="margin-top:10px">At most <input id="maxConc" type="number" min="1" max="200" class="w80"> tests at the same time
+          <span class="muted">(about 1 CPU core each on the server)</span><button id="saveLobby">Save</button><span class="muted" id="savedLobby"></span></div>
+      </div>
+      <div class="card pad">
         <h3>Pass mark</h3>
         <div class="row">Overall score ≥ <input id="passScore" type="number" min="0" max="100" step="1" class="w80">
           <span id="mustComplete"></span><button id="saveSettings">Save</button><span class="muted" id="saved"></span></div>
@@ -97,6 +104,7 @@ async function load() {
   const r = await fetch('/admin/api');
   data = await r.json();
   const link = data.public_url || location.origin;
+  document.body.classList.toggle('paused', data.settings.accepting === false);
   $('publicUrl').textContent = link;
   $('testLink').href = $('testLink').textContent = (data.public_url || location.origin) + data.test_path;
   $('configPath').textContent = data.config_path;
@@ -108,7 +116,9 @@ async function load() {
     $('mustComplete').innerHTML = tasks.filter(p => !p.scored).map(p =>
       `<label><input type="checkbox" class="must" value="${esc(p.key)}" ${data.config.must_complete.includes(p.key) ? 'checked' : ''}> ${esc(p.title)} must be completed</label>`).join(' ');
     $('onlyPart').innerHTML = tasks.map(p => `<option value="${esc(p.key)}">${esc(p.title)}</option>`).join('');
-    $('verdictFilter').innerHTML += Object.entries(data.verdicts).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('');
+    $('accepting').checked = data.settings.accepting !== false;
+    $('maxConc').value = data.settings.max_concurrent;
+    $('verdictFilter').innerHTML +=Object.entries(data.verdicts).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('');
     loaded = true;
   }
   render();
@@ -231,6 +241,13 @@ $('saveSettings').onclick = async () => {
   $('saved').textContent = r.ok ? 'saved' : 'not saved: ' + await r.text();
   setTimeout(() => $('saved').textContent = '', r.ok ? 1500 : 8000);
 };
+async function saveLobby() {
+  const r = await fetch('/admin/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ accepting: $('accepting').checked, max_concurrent: +$('maxConc').value }) });
+  $('savedLobby').textContent = r.ok ? 'saved' : 'not saved: ' + await r.text();
+  setTimeout(() => $('savedLobby').textContent = '', 1500);
+}
+$('accepting').onchange = saveLobby; $('saveLobby').onclick = saveLobby;
 $('makeTest').onclick = () => {
   const url = `${data.public_url || location.origin}${data.test_path}?only=${encodeURIComponent($('onlyPart').value)}`;
   $('partLink').innerHTML = `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a>`;

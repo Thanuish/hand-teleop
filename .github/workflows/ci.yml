@@ -1,0 +1,107 @@
+# Every push and pull request: the tests, then the Docker image built and tried out (started,
+# a candidate joins and a simulator starts inside it, the admin sign-in, data kept across a
+# restart). A version tag (v1.2.0): also the images pushed to GitHub's registry,
+# ghcr.io/<owner>/hand-teleop:<version>-cpu and -gpu (and latest-cpu / latest-gpu).
+name: ci
+
+on:
+  push:
+    branches: [main, phase1-solid-game]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - name: system libraries (MediaPipe)
+        run: sudo apt-get update && sudo apt-get install -y libgl1 libegl1 libgles2
+      - run: pip install -r requirements.txt
+      - name: configuration
+        run: python -m TEST_TELEOP.check_config
+      - name: clutch mapping and smoothing
+        run: python -m vrteleop.test_teleop
+      - name: hand control
+        run: node TEST_TELEOP/web/hand/test/run.mjs
+      - name: a scripted run through every task
+        run: python -m TEST_TELEOP.screen_bot
+
+  container:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: build the CPU image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: hand-teleop:ci
+          cache-from: type=gha,scope=cpu
+          cache-to: type=gha,mode=max,scope=cpu
+      - name: try it out
+        run: |
+          set -eu
+          run() { docker run -d --name teleop -p 8000:8000 -v teleop-data:/data \
+                    -e PUBLIC_URL=http://localhost:8000 -e ADMIN_PASSWORD=ci-secret hand-teleop:ci; }
+          up() { for i in $(seq 90); do curl -fs localhost:8000/healthz && return 0; sleep 2; done; docker logs teleop; return 1; }
+          run; up; echo
+          echo "== the candidate page"
+          curl -fs localhost:8000/ | grep -q "bare hand"
+          echo "== a candidate joins: a simulator starts in the container"
+          loc=$(curl -s -D - -o /dev/null -X POST -d "name=CI&email=ci@example.com&consent=on" localhost:8000/join \
+                | grep -i '^location:' | tr -d '\r' | awk '{print $2}')
+          echo "redirected to $loc"; case "$loc" in /play/*) ;; *) docker logs teleop; exit 1;; esac
+          code=${loc#/play/}
+          curl -fs "localhost:8000$loc" | grep -q "Hand control"
+          test "$(curl -s -o /dev/null -w '%{http_code}' localhost:8000/s/$code/scene.json)" = 200
+          curl -fs localhost:8000/healthz | grep -q '"running": 1'
+          echo "== the admin page asks to sign in, and opens with the password"
+          test "$(curl -s -o /dev/null -w '%{http_code}' localhost:8000/admin)" = 401
+          test "$(curl -s -o /dev/null -w '%{http_code}' -u admin:wrong localhost:8000/admin/api)" = 401
+          curl -fs -u admin:ci-secret localhost:8000/admin/api | grep -q 'ci@example.com'
+          echo "== restarted: the candidate is still there (the volume)"
+          docker rm -f teleop >/dev/null; run; up; echo
+          curl -fs -u admin:ci-secret localhost:8000/admin/api | grep -q 'ci@example.com'
+          echo "all good"; docker images hand-teleop:ci --format 'image size: {{.Size}}'
+      - if: failure()
+        run: docker logs teleop || true
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: container
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        variant: [cpu, gpu]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: image name (lower case)
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          build-args: VARIANT=${{ matrix.variant }}
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.ref_name }}-${{ matrix.variant }}
+            ${{ env.IMAGE }}:latest-${{ matrix.variant }}
+          cache-from: type=gha,scope=${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}

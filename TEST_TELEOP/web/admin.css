@@ -30,6 +30,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--sr-violet-2); }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .grow { flex: 1; }
 
+body.paused .linkbar { border-color: rgba(251,191,36,.6); }
+body.paused .linkbar::before { content: 'New candidates are paused (Settings)'; flex-basis: 100%; color: var(--sr-warn); font-weight: 600; font-size: 12px; }
 .linkbar { display: flex; gap: 32px; flex-wrap: wrap; padding: 14px 20px; margin-bottom: 16px; }
 .linkbar .k { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--sr-faint); }
 .linkbar .v { display: flex; align-items: center; gap: 10px; margin-top: 4px; }

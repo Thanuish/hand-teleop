@@ -14,12 +14,22 @@ Built from the repository's `Dockerfile` (`docker build -t hand-teleop:cpu .`, o
 `--build-arg VARIANT=gpu`). Version tags are built automatically by GitHub Actions into
 `ghcr.io/thanuish/hand-teleop:v<version>-cpu` / `-gpu` (e.g. `v1.0.0-cpu`). Without a registry: `docker save` / `docker load` a `.tar`.
 
-The registry is private. To pull, sign in once with a GitHub account that can read the
+**As a file:** every version's GitHub Release has `hand-teleop-v<version>-cpu.tar.gz`
+(about 0.5 GB; a `.sha256` next to it to check it arrived whole):
+
+```bash
+sha256sum -c hand-teleop-v1.0.1-cpu.tar.gz.sha256
+docker load < hand-teleop-v1.0.1-cpu.tar.gz      # gives the image hand-teleop:v1.0.1-cpu
+```
+
+Then use `hand-teleop:v1.0.1-cpu` as the image name in the `docker run` below.
+
+**From the registry:** it's private. To pull, sign in once with a GitHub account that can read the
 repository, using a personal access token with the `read:packages` scope:
 
 ```bash
 echo <token> | docker login ghcr.io -u <github-user> --password-stdin
-docker pull ghcr.io/thanuish/hand-teleop:v1.0.0-cpu
+docker pull ghcr.io/thanuish/hand-teleop:v1.0.1-cpu
 ```
 
 ## Run
@@ -31,7 +41,7 @@ docker run -d --name teleop --restart unless-stopped \
   -e PUBLIC_URL=https://teleop.sereact.ai \
   -e ADMIN_USER=admin -e ADMIN_PASSWORD='<a long random password>' \
   -e MAX_CONCURRENT=25 \
-  ghcr.io/thanuish/hand-teleop:v1.0.0-cpu
+  ghcr.io/thanuish/hand-teleop:v1.0.1-cpu      # (or hand-teleop:v1.0.1-cpu after docker load)
 ```
 
 GPU variant: add `--gpus all` and use the `-gpu` tag.

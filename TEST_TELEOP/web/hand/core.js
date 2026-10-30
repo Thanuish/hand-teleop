@@ -863,7 +863,24 @@ export async function openCamera(facing = 'user') {
     // smaller steps between them)
     audio: false, video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 } } });
   const video = document.createElement('video');
-  video.setAttribute('playsinline', ''); video.muted = true; video.srcObject = stream;
-  await video.play();
-  return { video, stream, stop: () => stream.getTracks().forEach(t => t.stop()) };
+  video.setAttribute('playsinline', ''); video.muted = true; video.autoplay = true;
+  // in the page (some browsers stop a video that isn't: "the play() request was interrupted
+  // because the media was removed from the document"), invisible, and inside the window (Chrome
+  // pauses muted videos it thinks nobody sees: out of view, or hidden altogether)
+  Object.assign(video.style, { position: 'fixed', right: '0', bottom: '0', width: '2px', height: '2px',
+                               opacity: '0.01', pointerEvents: 'none', zIndex: '-1' });
+  document.body.appendChild(video);
+  video.srcObject = stream;
+  if (video.readyState < 1) await new Promise((ok) => video.addEventListener('loadedmetadata', ok, { once: true }));
+  // (play() can be interrupted by the browser while the stream settles: try again a few times)
+  for (let i = 0; ; i++) {
+    try { await video.play(); break; } catch (e) {
+      if (i >= 4 || (e.name !== 'AbortError' && e.name !== 'NotAllowedError')) {
+        stream.getTracks().forEach(t => t.stop()); video.remove();
+        throw e;
+      }
+      await new Promise((ok) => setTimeout(ok, 250 * (i + 1)));
+    }
+  }
+  return { video, stream, stop: () => { stream.getTracks().forEach(t => t.stop()); video.remove(); } };
 }

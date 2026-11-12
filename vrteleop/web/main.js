@@ -27,6 +27,18 @@ function applyBudget() {
   renderer.setSize(window.innerWidth, window.innerHeight);
 }
 applyBudget();
+// The graphics chip reset (a context loss: too much at once, a driver hiccup): three.js restores
+// the context by itself; then draw lightly (pixels and frames down), so an overloaded chip
+// recovers instead of resetting again (the browser blocks WebGL for the page after a few).
+// Pages hear of it through 'teleop-context-lost' / 'teleop-context-restored'.
+renderer.domElement.addEventListener('webglcontextlost', () => {
+  Object.assign(BUDGET, { maxPixels: Math.min(BUDGET.maxPixels, 1.0e6), maxFps: Math.min(BUDGET.maxFps, 30) });
+  window.dispatchEvent(new CustomEvent('teleop-context-lost'));
+});
+renderer.domElement.addEventListener('webglcontextrestored', () => {
+  applyBudget();
+  window.dispatchEvent(new CustomEvent('teleop-context-restored'));
+});
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;   // photographic highlight roll-off
 renderer.toneMappingExposure = 1.0;
@@ -126,7 +138,6 @@ placeLights();
 
 // ------------------------------------------------------------ scene loading
 let bodyObjs = [];
-let cloths = [];                 // deformable garments: {geo, W, coarse, fine, nvert}
 let sceneTextures = [];
 const texLoader = new THREE.TextureLoader();
 const matCache = new Map();
@@ -202,62 +213,10 @@ function loadTexture(url) {
   }, undefined, () => resolve(null)));
 }
 
-// Deformable cloth: the server streams the coarse simulation vertices; the client
-// smooths them with a fixed Loop-subdivision matrix W (fine = W * coarse) every frame.
-function makeCloth(fx, mats) {
-  const rows = b64(fx.w_rows, Uint32Array), cols = b64(fx.w_cols, Uint32Array), vals = b64(fx.w_vals, Float32Array);
-  const geo = new THREE.BufferGeometry();
-  const fine = new Float32Array(3 * fx.nfine);
-  geo.setAttribute('position', new THREE.BufferAttribute(fine, 3).setUsage(THREE.DynamicDrawUsage));
-  geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(3 * fx.nfine), 3).setUsage(THREE.DynamicDrawUsage));
-  geo.setAttribute('uv', new THREE.BufferAttribute(b64(fx.uv, Float32Array), 2));
-  geo.setIndex(new THREE.BufferAttribute(b64(fx.faces, Uint32Array), 1));
-  const m = fx.mat >= 0 ? mats[fx.mat] : null;
-  const fabric = (tex) => new THREE.MeshPhysicalMaterial({
-    color: 0xffffff, map: tex, bumpMap: tex, bumpScale: 1.2,
-    roughness: 0.92, metalness: 0.0,
-    sheen: 0.6, sheenRoughness: 0.75, sheenColor: new THREE.Color(0.55, 0.62, 0.78),  // cotton fuzz
-  });
-  const frontMat = fabric(m ? textureFor(m.tex) : null);
-  frontMat.side = THREE.FrontSide;
-  // Inside of the garment (seen through the waist and hem openings): the reverse of denim
-  // is the pale weft side, so reuse the weave for bump but tint it light.
-  const backMat = fx.back_tex >= 0 ? fabric(textureFor(fx.back_tex)) : new THREE.MeshPhysicalMaterial({
-    color: new THREE.Color(0.62, 0.68, 0.78), bumpMap: frontMat.map, bumpScale: 0.8,
-    roughness: 0.95, metalness: 0.0, sheen: 0.4, sheenRoughness: 0.8, sheenColor: new THREE.Color(0.8, 0.84, 0.9),
-  });
-  backMat.side = THREE.BackSide;
-  // the inside is never in front of the outside: bias it back in the depth test so the two
-  // panels (a few mm apart) never flicker
-  backMat.polygonOffset = true; backMat.polygonOffsetFactor = 2; backMat.polygonOffsetUnits = 4;
-  const grp = new THREE.Group();
-  for (const mat of [frontMat, backMat]) {
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.castShadow = mesh.receiveShadow = !LITE;
-    mesh.frustumCulled = false;
-    grp.add(mesh);
-  }
-  mjRoot.add(grp);
-  return { grp, geo, rows, cols, vals, nvert: fx.nvert, coarse: new Float32Array(3 * fx.nvert), fine, dirty: false };
-}
-function updateCloth(c) {
-  if (!c.dirty) return;
-  c.dirty = false;
-  const { rows, cols, vals, coarse, fine } = c;
-  fine.fill(0);
-  for (let k = 0; k < vals.length; k++) {
-    const i = 3 * rows[k], j = 3 * cols[k], w = vals[k];
-    fine[i] += w * coarse[j]; fine[i + 1] += w * coarse[j + 1]; fine[i + 2] += w * coarse[j + 2];
-  }
-  c.geo.attributes.position.needsUpdate = true;
-  c.geo.computeVertexNormals();
-}
-
 async function loadScene() {
   const res = await fetch(BASE + '/scene.json', { cache: 'no-cache' });   // (checked: a refresh reuses it when unchanged)
   const js = await res.json();
   bodyObjs.forEach(o => mjRoot.remove(o));
-  cloths.forEach(c => mjRoot.remove(c.grp));
   matCache.clear();
   sceneTextures = await Promise.all((js.textures || []).map(loadTexture));
   const mats = js.materials || {};
@@ -281,9 +240,8 @@ async function loadScene() {
     mesh.receiveShadow = !LITE;
     bodyObjs[g.body].add(mesh);
   }
-  cloths = (js.flexes || []).map(fx => makeCloth(fx, mats));
   // handle for page scripts (e.g. the screening monitor's depth cues) and the browser console
-  window.__teleop = { scene, cloths, camera, orbit, mjRoot, THREE, renderer, afterRender, send,
+  window.__teleop = { scene, camera, orbit, mjRoot, THREE, renderer, afterRender, send,
                       setBudget: (b) => { Object.assign(BUDGET, b); applyBudget(); }, budget: BUDGET,
                       body: (name) => bodyObjs.find(o => o.name === name) };
   window.dispatchEvent(new Event('teleop-scene'));
@@ -406,7 +364,7 @@ window.addEventListener('keydown', (e) => {
 
 // ---------------------------------------------------------------- network
 let ws = null, wsOpen = false, status = {};
-let sceneId = null, reloading = false;   // the server rebuilt its scene (e.g. another garment)
+let sceneId = null, reloading = false;   // the server rebuilt its scene
 const connEl = document.getElementById('conn');
 function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${BASE}/ws`);
@@ -433,36 +391,16 @@ function connect() {
     const flags = f[1], nb = f[2];
     if (nb !== bodyObjs.length) return;
     let k = 4;
-    // robot poses: shown interpolated between the last two packets (smoothBodies), so the arms
-    // move smoothly at the headset's frame rate however often the server sends
-    const now = performance.now();
-    if (!bodyPose.cur || bodyPose.cur.length !== 7 * nb) {
-      bodyPose.prev = f.slice(k, k + 7 * nb); bodyPose.cur = bodyPose.prev.slice();
-    } else {
-      bodyPose.prev.set(bodyPose.cur); bodyPose.cur.set(f.subarray(k, k + 7 * nb));
-      const gap = Math.min(Math.max(now - bodyPose.t, 4), 120);
-      bodyPose.interval += 0.2 * (gap - bodyPose.interval);
-    }
-    bodyPose.t = now;
+    // robot poses (and the targets): into the playout buffer, timed by the simulator's clock
+    // (smoothBodies draws a little behind the newest, between two real poses)
+    playoutAdd(f[0], f.slice(k, k + 7 * nb + 14), nb);
     k += 7 * nb;
-    for (let a = 0; a < 2; a++, k += 7) {
-      targets[a].position.set(f[k], f[k + 1], f[k + 2]);
-      targets[a].quaternion.set(f[k + 4], f[k + 5], f[k + 6], f[k + 3]);
-      targets[a].visible = (flags & (1 << a)) !== 0;
-    }
+    for (let a = 0; a < 2; a++, k += 7) targets[a].visible = (flags & (1 << a)) !== 0;
     if (f.length >= k + 7) {           // operator (VR user) head pose, for the laptop mirror
       operatorLive = (flags & 8) !== 0;
       operatorHead.position.set(f[k], f[k + 1], f[k + 2]);
       operatorHead.quaternion.set(f[k + 4], f[k + 5], f[k + 6], f[k + 3]);
       k += 7;
-    }
-    const nCloth = f[3];               // cloth vertex positions (all garments, concatenated)
-    if (nCloth > 0 && f.length >= k + 3 * nCloth) {
-      for (const c of cloths) {
-        c.coarse.set(f.subarray(k, k + 3 * c.nvert));
-        c.dirty = true;
-        k += 3 * c.nvert;
-      }
     }
   };
 }
@@ -561,21 +499,13 @@ function updateHud() {
   const stale = s.version !== PROTOCOL_VERSION;
   if (stale) s.message = 'VERSION MISMATCH: restart server + reload page';
   const rec = s.recording;
-  const cov = s.cloth && s.cloth.coverage !== undefined ? `   folded: ${Math.round(100 * (1 - s.cloth.coverage))}% smaller footprint` : '';
-  const hold = (h) => s.holding?.[h] ? ' (holding cloth)' : '';
-  const g = s.game;
-  const gameLine = !g ? '' : g.done
-    ? `FOLDED in ${g.time.toFixed(0)} s` + (g.best !== null ? `   best ${g.best.toFixed(0)} s` : '') + '   (X = new game)'
-    : `step ${g.step + 1}/${g.steps}: ${g.goal}   ${g.running ? g.time.toFixed(0) + ' s' : '(grip to start)'}` +
-      (g.best !== null ? `   best ${g.best.toFixed(0)} s` : '');
   statusEl.textContent =
-    (gameLine ? gameLine + '\n' : '') +
-    `task: ${s.task_title || s.task || '-'}${cov}\n` +
+    `task: ${s.task_title || s.task || '-'}\n` +
     `${rec ? '● REC ' + s.rec_time.toFixed(1) + 's (' + s.frames + ' fr)' : 'idle'}\n` +
     `next episode: ${s.next_episode}   last: ${s.last_saved || '-'}\n` +
     `sim t=${s.sim_time}s  rtf=${s.rtf}  input=${s.input_fresh ? 'live' : 'none'}\n` +
     `engaged L:${s.engaged?.left ? 'Y' : '-'} R:${s.engaged?.right ? 'Y' : '-'}   ` +
-    `gripper L:${Math.round(100 * (s.gripper?.left || 0))}%${hold('left')} R:${Math.round(100 * (s.gripper?.right || 0))}%${hold('right')}\n${s.message || ''}`;
+    `gripper L:${Math.round(100 * (s.gripper?.left || 0))}% R:${Math.round(100 * (s.gripper?.right || 0))}%\n${s.message || ''}`;
   camGroup.visible = !!s.cams_on;
   camDomRow.style.display = s.cams_on ? 'flex' : 'none';
   btnRec.textContent = rec ? '■ Stop & save' : '● Record';
@@ -583,24 +513,12 @@ function updateHud() {
   const c = hudCanvas.getContext('2d');
   c.clearRect(0, 0, 512, 384);
   c.fillStyle = 'rgba(15,17,22,0.85)'; c.beginPath(); c.roundRect(0, 0, 512, 384, 24); c.fill();
-  if (g) {                     // the folding game: step, goal, clock
-    const pct = Math.round(100 * (s.cloth?.coverage ?? 1));
-    c.fillStyle = g.done ? '#5ee07a' : '#ffd24a';
-    c.font = 'bold 34px system-ui, sans-serif';
-    c.fillText(g.done ? `FOLDED  ${g.time.toFixed(0)} s` : `STEP ${g.step + 1}/${g.steps}   ${g.running ? g.time.toFixed(0) + ' s' : ''}`, 24, 300);
-    c.fillStyle = '#eee'; c.font = '24px system-ui, sans-serif';
-    c.fillText(g.done ? (g.best !== null ? `best ${g.best.toFixed(0)} s  -  X for a new game` : '') : g.goal.slice(0, 40), 24, 336);
-    if (!g.done) {
-      c.fillStyle = '#9ab';
-      c.fillText(`footprint ${pct}% -> ${Math.round(100 * g.target)}%` + (g.best !== null ? `   best ${g.best.toFixed(0)} s` : ''), 24, 368);
-    }
-  }
   c.fillStyle = rec ? '#ff4040' : '#8a8f98';
   c.font = 'bold 54px system-ui, sans-serif';
   c.fillText(rec ? `● REC ${s.rec_time.toFixed(1)}s` : '○ idle', 24, 72);
   c.fillStyle = '#ddd'; c.font = '30px system-ui, sans-serif';
   c.fillText(`episode ${s.next_episode}   ${s.last_saved ? 'last: ' + s.last_saved.replace('.hdf5', '') : ''}`, 24, 128);
-  const gp = (h) => `${s.engaged?.[h] ? '■' : '□'} grip ${Math.round(100 * (s.gripper?.[h] || 0))}%${s.holding?.[h] ? '✋' : ''}`;
+  const gp = (h) => `${s.engaged?.[h] ? '■' : '□'} grip ${Math.round(100 * (s.gripper?.[h] || 0))}%`;
   c.fillText(`L ${gp('left')}   R ${gp('right')}`, 24, 176);
   c.fillStyle = '#9ab'; c.font = '24px system-ui, sans-serif';
   c.fillText((s.message || '').slice(0, 38), 24, 226);
@@ -719,21 +637,44 @@ function handleXRInput() {
 }
 
 // -------------------------------------------------------------------- loop
-const bodyPose = { prev: null, cur: null, t: 0, interval: 11 };
+// The playout buffer: the last few pose packets with the simulator's time of each. The screen
+// draws PLAYOUT_DELAY behind the newest on the simulator's clock (mapped to this page's), always
+// between two real poses at an even pace: drawing by arrival time (two packets, the newest one
+// interval ahead) snapped forward when a packet came early and stalled when one was late
+// (packets bunch up on the way, and the simulator steps in bursts).
+const PLAYOUT_DELAY = 0.04;      // [s]
+const playout = { buf: [], off: null, nb: 0 };
+function playoutAdd(simT, poses, nb) {
+  const b = playout.buf, now = performance.now() / 1000;
+  if (nb !== playout.nb || (b.length && simT < b[b.length - 1].t - 0.05)) { b.length = 0; playout.off = null; }   // (a new scene, a reset)
+  playout.nb = nb;
+  if (b.length && simT <= b[b.length - 1].t) return;
+  b.push({ t: simT, p: poses });
+  if (b.length > 16) b.shift();
+  // the clock offset (this page's time - the simulator's): follows the earliest arrivals at once
+  // (the least delayed packets) and later ones slowly (the simulator running slower than real time)
+  const o = now - simT;
+  playout.off = playout.off === null || o < playout.off ? o : playout.off + 0.02 * (o - playout.off);
+}
 const _qa = new THREE.Quaternion(), _qb = new THREE.Quaternion();
 function smoothBodies() {
-  const { prev, cur } = bodyPose;
-  if (!cur || cur.length !== 7 * bodyObjs.length) return;
-  // one packet interval behind the newest pose: always between two real poses
-  const a = Math.min(1, (performance.now() - bodyPose.t) / bodyPose.interval);
-  for (let i = 0, k = 0; i < bodyObjs.length; i++, k += 7) {
-    const o = bodyObjs[i];
-    o.position.set(prev[k] + a * (cur[k] - prev[k]), prev[k + 1] + a * (cur[k + 1] - prev[k + 1]),
-      prev[k + 2] + a * (cur[k + 2] - prev[k + 2]));
-    _qa.set(prev[k + 4], prev[k + 5], prev[k + 6], prev[k + 3]);
-    _qb.set(cur[k + 4], cur[k + 5], cur[k + 6], cur[k + 3]);
+  const b = playout.buf, nb = bodyObjs.length;
+  if (!b.length || playout.nb !== nb) return;
+  const t = performance.now() / 1000 - playout.off - PLAYOUT_DELAY;
+  let i = b.length - 1;
+  while (i > 0 && b[i - 1].t > t) i--;
+  const A = i > 0 ? b[i - 1] : b[0], B = b[i];
+  const a = B.t > A.t ? Math.min(1, Math.max(0, (t - A.t) / (B.t - A.t))) : 1;
+  const draw = (o, k) => {
+    const P = A.p, Q = B.p;
+    o.position.set(P[k] + a * (Q[k] - P[k]), P[k + 1] + a * (Q[k + 1] - P[k + 1]), P[k + 2] + a * (Q[k + 2] - P[k + 2]));
+    _qa.set(P[k + 4], P[k + 5], P[k + 6], P[k + 3]);
+    _qb.set(Q[k + 4], Q[k + 5], Q[k + 6], Q[k + 3]);
     o.quaternion.slerpQuaternions(_qa, _qb, a);
-  }
+  };
+  for (let j = 0; j < nb; j++) draw(bodyObjs[j], 7 * j);
+  for (let j = 0; j < 2; j++) draw(targets[j], 7 * nb + 7 * j);
+  while (b.length > 2 && b[1].t < t) b.shift();                 // (poses already passed)
 }
 // page scripts can draw more after each frame (e.g. the screening monitor's side view)
 const afterRender = [];
@@ -745,7 +686,6 @@ renderer.setAnimationLoop((now) => {
   }
   handleXRInput();
   smoothBodies();
-  for (const c of cloths) updateCloth(c);
   if (!renderer.xr.isPresenting) updateMirrorCamera();
   renderer.render(scene, camera);
   if (!renderer.xr.isPresenting) for (const f of afterRender) f(renderer, scene);

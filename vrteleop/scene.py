@@ -7,8 +7,8 @@ World frame (MuJoCo, Z-up):
 The two arms are mounted on the back edge of the table at y = +/-ARM_Y.
 
 Tasks (select with `--task`):
-    jeans   fold a pair of denim jeans (deformable flex cloth)          [default]
-    blocks  pick three cubes and a cylinder and drop them into a bin
+    blocks  pick three cubes and a cylinder and drop them into a bin    [default]
+    screen  the screening test (registered by TEST_TELEOP, see register_task)
 
 The surroundings (room, wood floor, laminate lab table, lights with shadows) are the
 same for every task; textures are procedural (see textures.py).
@@ -22,8 +22,6 @@ from typing import Callable
 import mujoco
 import numpy as np
 
-from . import cloth as C
-from . import cloth_config as CC
 from . import textures as T
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -54,10 +52,9 @@ SIDES = ("left", "right")
 HEAD_POS = [-0.30, 0.0, TABLE_Z + 0.77]
 
 TASKS = {
-    "jeans": "Fold the jeans",
     "blocks": "Put the blocks in the bin",
 }
-DEFAULT_TASK = "jeans"
+DEFAULT_TASK = "blocks"
 
 # --- blocks task: manipulable objects: name -> (type, size, rgba, nominal xy)
 OBJECTS = {
@@ -68,15 +65,8 @@ OBJECTS = {
 }
 BIN_POS = (0.66, -0.12)
 
-# --- jeans task: waistband centre (x, y) and direction of the legs (yaw; -pi/2 = toward -y).
-# The jeans lie front side up across the table, waistband on the operator's left, hems on
-# the right; the left arm reaches the waistband, the right arm the hems.
-JEANS_POS = (0.50, 0.50)
-JEANS_YAW = -np.pi / 2
-# Lowest allowed pinch-point height per task (teleop workspace floor). For cloth the
-# fingertips must be able to reach the table: the 2F-85 tips swing ~18 mm below the
-# pinch point when the jaws close.
-PINCH_Z_MIN = {"jeans": TABLE_Z + 0.016, "blocks": TABLE_Z + 0.02}
+# Lowest allowed pinch-point height per task (teleop workspace floor).
+PINCH_Z_MIN = {"blocks": TABLE_Z + 0.02}
 
 ROOM_HALF = (2.6, 2.6)
 ROOM_HEIGHT = 2.8
@@ -88,10 +78,6 @@ class SceneInfo:
     xml: str
     task: str = DEFAULT_TASK
     objects: dict = field(default_factory=dict)         # rigid task objects (name -> spec tuple)
-    cloth: C.ClothInfo | None = None
-    cloth_config: CC.ClothConfig | None = None           # garment + cloth simulation settings
-    cloth_engine: str | None = None                      # "mujoco" (flex in this model) or "gpu"
-    grasp_eq: dict = field(default_factory=dict)        # side -> [eq ids] (cloth pinch)
     web_textures: dict = field(default_factory=dict)    # extra textures for the web client
     arm_qpos_adr: dict = field(default_factory=dict)   # side -> (6,) qpos indices
     arm_dof_adr: dict = field(default_factory=dict)    # side -> (6,) dof indices
@@ -267,69 +253,16 @@ def _add_blocks(spec: mujoco.MjSpec):
         g.condim = 4
 
 
-def _add_denim_material(spec: mujoco.MjSpec, g: C.GarmentSpec):
-    front, back = C.denim_textures(g)
-    # texture atlas: front panel on the left half, back panel on the right half
-    atlas = np.concatenate([T.decode_png(front), T.decode_png(back)], axis=1)
-    T.add_texture(spec, "denim_atlas", atlas)
-    T.add_material(spec, "denim", "denim_atlas", specular=0.08, shininess=0.1, roughness=0.95)
-
-
-def _add_jeans(spec: mujoco.MjSpec, cfg: CC.ClothConfig):
-    g = cfg.garment
-    _add_denim_material(spec, g)
-    x, y = JEANS_POS
-    info = C.add_garment(spec, "jeans", [x, y, TABLE_Z + g.sphere_r + 0.0003], JEANS_YAW, g,
-                         material="denim")
-    # Every collision geom of the grippers (pads, finger links, palm) touches the continuous cloth
-    # surface, not only the vertex spheres: those are 5 cm apart, and a finger moved sideways
-    # would slip between them, through the fabric, and the jeans would hang on it.
-    # Silicone finger pads: mu ~ 1 on fabric (grasp.pad_friction).
-    for b in spec.bodies:
-        if "_gripper_" not in b.name:
-            continue
-        for gm in b.geoms:
-            if gm.contype or gm.conaffinity:
-                gm.conaffinity = gm.conaffinity | C.FLEX_CONTYPE
-            if gm.name.endswith(("_pad1", "_pad2")):
-                gm.friction = [cfg.pad_friction, 0.01, 0.001]
-    for side in SIDES:
-        C.add_grasp_constraints(spec, info, side)
-    return info, {}
-
-
-def build_spec(task: str = DEFAULT_TASK, cloth: CC.ClothConfig | None = None,
-               cloth_engine: str = "mujoco"):
-    """Returns (spec, cloth_info or None, extra web textures). `cloth`: garment and cloth
-    simulation settings (default: config/cloth.toml, see cloth_config). With a cloth engine other
-    than "mujoco" the jeans are simulated outside the model: it only gets their material."""
+def build_spec(task: str = DEFAULT_TASK):
+    """Returns (spec, extra web textures)."""
     if task not in TASKS:
         raise ValueError(f"unknown task '{task}', choose from {list(TASKS)}")
     spec = mujoco.MjSpec()
     spec.modelname = f"dual_ur5e_{task}"
     spec.option.timestep = 0.002
-    if task == "jeans":
-        cloth = cloth or CC.load()
-        # flex bending elasticity is integrated implicitly only by the discrete integrator;
-        # pyramidal cones keep the ~300 cloth contacts cheap enough for real time
-        spec.option.integrator = mujoco.mjtIntegrator.mjINT_DISCRETE
-        spec.option.cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
-        # Timestep (config: simulation.timestep, 4 ms): pays for the full cloth collision model
-        # at the quality of 3 ms, also for a crumpled heap; 5 ms degrades a heap, 6 ms is unstable.
-        spec.option.timestep = cloth.timestep
-        # Conjugate-gradient solver with a fixed iteration budget: the two-layer garment makes
-        # Newton's matrix factorisation ~1.6x slower; CG keeps a flat per-step cost (no
-        # frame-time spikes in VR). The budget (simulation.solver_iterations, 30) matters: at 24
-        # CG stops short while a leg hangs from the grippers and the threads stretch up to ~17 %
-        # (rubbery jeans); 30 keeps them at < 1.2 % for 99 % of the edges.
-        # (scripts/cloth_bench.py measures this.)
-        spec.option.solver = mujoco.mjtSolver.mjSOL_CG
-        spec.option.iterations = cloth.solver_iterations
-        spec.option.tolerance = 1e-6
-    else:
-        spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
-        spec.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
-        spec.option.impratio = 10
+    spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
+    spec.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
+    spec.option.impratio = 10
     spec.visual.global_.offwidth = 1280
     spec.visual.global_.offheight = 960
     wb = spec.worldbody
@@ -398,21 +331,11 @@ def build_spec(task: str = DEFAULT_TASK, cloth: CC.ClothConfig | None = None,
             bp[2] *= 0.5
             a.biasprm = bp
 
-    cloth_info, web_tex = None, {}
     if task == "blocks":
         _add_blocks(spec)
     elif task in PLUGINS:
         PLUGINS[task].add(spec)
-    elif task == "jeans" and cloth_engine == "mujoco":
-        cloth_info, web_tex = _add_jeans(spec, cloth)
-    elif task == "jeans":
-        # simulated outside the model: only its material, and a render-only mesh the engine
-        # updates before MuJoCo renders (camera screens, recorded images, videos)
-        _add_denim_material(spec, cloth.garment)
-        _, J, thick = C.fine_garment(cloth.garment, cloth.gpu.spacing, cloth.gpu.thickness)
-        C.ClothRenderMesh.add(spec, C.place_flat(J, JEANS_POS, JEANS_YAW, TABLE_Z, 0.5 * thick),
-                              J, "denim")
-    return spec, cloth_info, web_tex
+    return spec, {}
 
 
 def _look_quat(pos, target, up=(0, 0, 1)):
@@ -433,14 +356,10 @@ def _look_quat(pos, target, up=(0, 0, 1)):
     return q
 
 
-def build_scene(task: str = DEFAULT_TASK, cloth: CC.ClothConfig | None = None,
-                cloth_engine: str = "mujoco") -> SceneInfo:
-    if task == "jeans":
-        cloth = cloth or CC.load()
-    spec, cloth_info, web_tex = build_spec(task, cloth, cloth_engine)
+def build_scene(task: str = DEFAULT_TASK) -> SceneInfo:
+    spec, web_tex = build_spec(task)
     model = spec.compile()
-    info = SceneInfo(model=model, xml=spec.to_xml(), task=task, web_textures=web_tex,
-                     cloth_config=cloth, cloth_engine=cloth_engine if task == "jeans" else None)
+    info = SceneInfo(model=model, xml=spec.to_xml(), task=task, web_textures=web_tex)
     for side in SIDES:
         jids = [model.joint(f"{side}_{j}").id for j in ARM_JOINTS]
         info.arm_qpos_adr[side] = np.array([model.jnt_qposadr[j] for j in jids])
@@ -455,11 +374,6 @@ def build_scene(task: str = DEFAULT_TASK, cloth: CC.ClothConfig | None = None,
             info.obj_qpos_adr[name] = model.jnt_qposadr[model.joint(f"{name}_joint").id]
     if task in PLUGINS and PLUGINS[task].bind is not None:
         PLUGINS[task].bind(info)
-    if cloth_info is not None:
-        C.bind(cloth_info, model)
-        info.cloth = cloth_info
-        for side in SIDES:
-            info.grasp_eq[side] = [model.equality(f"{side}_pinch_{k}").id for k in range(C.PinchGrasp.K)]
     info.cameras = [model.camera(i).name for i in range(model.ncam)]
     return info
 
@@ -469,12 +383,8 @@ def _yaw_quat(yaw):
 
 
 def reset(info: SceneInfo, data: mujoco.MjData, rng: np.random.Generator | None = None,
-          randomize: float = 0.0, cloth_init: str = "flat"):
-    """Reset to home pose; optionally jitter object positions by +/- randomize metres.
-
-    Jeans: `randomize` jitters the position (+/- randomize m) and the heading
-    (+/- 3*randomize rad); cloth_init="crumpled" drops the jeans from 30 cm in a random
-    orientation and lets them settle into a realistic heap first."""
+          randomize: float = 0.0):
+    """Reset to home pose; optionally jitter object positions by +/- randomize metres."""
     m = info.model
     mujoco.mj_resetData(m, data)
     for side in SIDES:
@@ -494,44 +404,7 @@ def reset(info: SceneInfo, data: mujoco.MjData, rng: np.random.Generator | None 
         yaw = rng.uniform(-np.pi, np.pi) if randomize > 0 else 0.0
         data.qpos[a:a + 3] = [x + dx, y + dy, z]
         data.qpos[a + 3:a + 7] = _yaw_quat(yaw)
-    if info.cloth is not None:
-        _reset_cloth(info, data, rng, randomize, cloth_init)
     mujoco.mj_forward(m, data)
-
-
-def _reset_cloth(info: SceneInfo, data, rng, randomize, cloth_init):
-    m, ci = info.model, info.cloth
-    for e in info.grasp_eq.values():
-        data.eq_active[e] = 0
-    rest = C.rest_world(ci, m, data)
-    centre = rest.mean(axis=0)
-    if cloth_init == "crumpled":
-        # hold the jeans up in a random orientation, 30 cm above the table, then drop them
-        ax = rng.normal(size=3)
-        ax /= np.linalg.norm(ax)
-        ang = rng.uniform(0.6, 1.4)
-        q = np.zeros(4)
-        mujoco.mju_axisAngle2Quat(q, ax, ang)
-        R = np.zeros(9)
-        mujoco.mju_quat2Mat(R, q)
-        R = R.reshape(3, 3)
-        xyz = (rest - centre) @ R.T * 0.9 + centre + [0, 0, 0.30]
-        lo = xyz[:, 2].min()
-        if lo < TABLE_Z + 0.02:
-            xyz[:, 2] += TABLE_Z + 0.02 - lo
-        C.place(ci, m, data, xyz)
-        mujoco.mj_forward(m, data)
-        for _ in range(int(1.6 / m.opt.timestep)):
-            mujoco.mj_step(m, data)
-        data.time = 0.0
-        data.qvel[:] = 0
-        return
-    yaw = rng.uniform(-3 * randomize, 3 * randomize) if randomize > 0 else 0.0
-    dxy = rng.uniform(-randomize, randomize, 2) if randomize > 0 else np.zeros(2)
-    c, s = np.cos(yaw), np.sin(yaw)
-    Rz = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
-    xyz = (rest - centre) @ Rz.T + centre + [dxy[0], dxy[1], 0]
-    C.place(ci, m, data, xyz)
 
 
 if __name__ == "__main__":
@@ -544,7 +417,7 @@ if __name__ == "__main__":
     d = mujoco.MjData(m)
     reset(info, d)
     print(f"task={task} built in {time.time() - t0:.2f}s  nq={m.nq} nv={m.nv} nu={m.nu} "
-          f"nbody={m.nbody} ngeom={m.ngeom} nmesh={m.nmesh} nflex={m.nflex} neq={m.neq}")
+          f"nbody={m.nbody} ngeom={m.ngeom} nmesh={m.nmesh} neq={m.neq}")
     print("cameras:", info.cameras)
     for s in SIDES:
         print(s, "ee", d.site_xpos[info.ee_site[s]].round(3),
@@ -559,7 +432,3 @@ if __name__ == "__main__":
     for n in info.objects:
         a = info.obj_qpos_adr[n]
         print(n, d.qpos[a:a + 3].round(3))
-    if info.cloth is not None:
-        V = C.verts(info.cloth, d)
-        print("jeans verts", len(V), "bbox", V.min(0).round(3), V.max(0).round(3))
-        print("fold metrics", C.fold_metrics(info.cloth, V, TABLE_Z))

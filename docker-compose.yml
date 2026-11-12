@@ -1,0 +1,41 @@
+# The screening test on one server, at one address with https (see DEPLOY.md):
+#   1. point the address (e.g. assessment.sereact.ai) at this server's IP in DNS
+#   2. put the address and an admin password into .env next to this file:
+#        SITE=assessment.sereact.ai
+#        ADMIN_PASSWORD=<a long random password>
+#        VERSION=v1.0.2
+#   3. docker compose up -d
+# Caddy gets the https certificate by itself (ports 80 and 443 must be open) and passes everything,
+# the websockets too, to the test. Results stay in the volume teleop-data: back it up.
+services:
+  teleop:
+    image: ghcr.io/thanuish/hand-teleop:${VERSION:-latest}-cpu
+    restart: unless-stopped
+    environment:
+      PUBLIC_URL: https://${SITE:?set SITE in .env}
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
+      MAX_CONCURRENT: ${MAX_CONCURRENT:-15}
+    volumes:
+      - teleop-data:/data
+    expose:
+      - "8000"
+
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    depends_on: [teleop]
+    environment:
+      SITE: ${SITE}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  teleop-data:
+  caddy-data:
+  caddy-config:

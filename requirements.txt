@@ -13,3 +13,5 @@ tomlkit>=0.12
 # the QP inverse kinematics of the screening test (vrteleop/ik.py QPIK: exact joint limits, table keep-out)
 qpsolvers>=4.3
 daqp>=0.5
+# hand tracking on the server, for candidates whose computer is too slow (TEST_TELEOP/tracker.py)
+mediapipe>=0.10.14,<0.11

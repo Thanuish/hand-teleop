@@ -11,7 +11,6 @@
                actions, which is a quick check that the action labels reproduce the demo.
 """
 import argparse
-import json
 import sys
 import time
 from pathlib import Path
@@ -21,8 +20,6 @@ import mujoco
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from vrteleop import cloth as C  # noqa: E402
-from vrteleop import cloth_config as CC  # noqa: E402
 from vrteleop import scene as S  # noqa: E402
 
 
@@ -37,12 +34,6 @@ def info(h):
     h.visititems(visit)
     T = h["time"].shape[0]
     print(f"  duration: {h['time'][-1]:.2f}s, {T} frames")
-    if "observations/cloth_verts" in h:
-        faces = h["cloth/faces"][:]
-        tz = S.TABLE_Z
-        for name, i in (("first", 0), ("last", T - 1)):
-            m = C.fold_metrics_from(h["cloth/rest_uv"][:], faces, h["observations/cloth_verts"][i], tz)
-            print(f"  cloth {name} frame: coverage {m['coverage']:.2f}, height {m['height'] * 100:.1f} cm")
 
 
 def main():
@@ -66,29 +57,8 @@ def main():
         task = task.decode()
     if task == "screen":
         import TEST_TELEOP  # noqa: F401  (the screening test's scene: TEST_TELEOP/)
-    cloth = None
-    if task == "jeans":
-        if "cloth_config" in h.attrs:                 # the exact garment and settings recorded
-            cloth = CC.ClothConfig.from_json(h.attrs["cloth_config"])
-        else:                                         # older episodes: default garment, recorded spacing
-            sp = h.attrs.get("cloth_spacing")
-            cloth = CC.load(overrides={"spacing": float(sp)} if sp else None)
-    engine = h.attrs.get("cloth_engine", "mujoco")
-    engine = engine.decode() if isinstance(engine, bytes) else engine
-    # a cloth simulated outside MuJoCo (the GPU engine) replays from its recorded vertices, drawn
-    # through the scene's render-only mesh; the robots replay from the recorded states
-    sc = S.build_scene(task, cloth, engine if task == "jeans" else "mujoco")
+    sc = S.build_scene(task)
     m, d = sc.model, mujoco.MjData(sc.model)
-    render_mesh = None
-    if task == "jeans" and engine != "mujoco":
-        render_mesh = C.ClothRenderMesh(m, h["cloth/faces"][:])
-        cloth_verts = h["observations/cloth_verts"]
-        if a.mode == "actions":
-            sys.exit(f"--mode actions needs the MuJoCo cloth; this episode used the '{engine}' engine")
-    grasp = {}
-    if sc.cloth is not None:
-        grasp = {s: C.PinchGrasp(m, sc.cloth, s, sc.grasp_eq[s], slip_force=cloth.slip_force,
-                                 release_gap=cloth.release_gap) for s in S.SIDES}
     if h["observations/full_qpos"].shape[1] != m.nq:
         sys.exit(f"episode state size {h['observations/full_qpos'].shape[1]} != model nq {m.nq}: "
                  f"the scene changed since this episode was recorded")
@@ -101,7 +71,6 @@ def main():
     d.qpos[:], d.qvel[:] = qpos[0], qvel[0]
     mujoco.mj_forward(m, d)
     substeps = max(1, int(round(1.0 / fps / m.opt.timestep)))
-    ctrl_every = max(1, int(round(0.01 / m.opt.timestep)))     # pinch logic runs at 100 Hz like the server
 
     def advance(i):
         if a.mode == "states":
@@ -111,10 +80,7 @@ def main():
             for k, s in enumerate(S.SIDES):
                 d.ctrl[sc.arm_act[s]] = act[i, 7 * k:7 * k + 6]
                 d.ctrl[sc.grip_act[s]] = 255.0 * act[i, 7 * k + 6]
-            for n in range(substeps):
-                if grasp and n % ctrl_every == 0:
-                    for k, s in enumerate(S.SIDES):
-                        grasp[s].update(m, d, float(act[i, 7 * k + 6]), ctrl_every * m.opt.timestep)
+            for _ in range(substeps):
                 mujoco.mj_step(m, d)
 
     camera = a.camera
@@ -152,8 +118,6 @@ def main():
                 advance(i)
                 if operator:
                     place_operator(i)
-                if render_mesh is not None:
-                    render_mesh.update(m, d, cloth_verts[i], r)
                 r.update_scene(d, camera=camera)
                 w.append_data(r.render())
         print(f"wrote {a.video} ({T} frames)")
@@ -163,9 +127,6 @@ def main():
         return
 
     from mujoco import viewer as mjviewer
-    if render_mesh is not None:
-        print("note: the interactive viewer shows the GPU-simulated jeans in their start pose; "
-              "use --video to see them move")
     with mjviewer.launch_passive(m, d) as v:
         i = 0
         while v.is_running():

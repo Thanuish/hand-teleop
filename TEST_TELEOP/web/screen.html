@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Robot control test</title>
+  <title>Sereact · Teleoperation test</title>
   <style>
     html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1d22; color: #eee;
       font: 16px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
@@ -43,10 +43,10 @@
                  background: rgba(20,22,27,.7); padding: 1px 6px; border-radius: 3px; }
 /* ---- hand control */
 :root { --acc1: #7c5cff; --acc2: #22d3ee; --glass: rgba(18,20,28,.78); --line: rgba(255,255,255,.09); }
-#start { position: fixed; inset: 0; z-index: 12; display: flex; align-items: center; justify-content: center;
+#start { position: fixed; inset: 0; z-index: 12; display: flex; overflow-y: auto; padding: 16px; box-sizing: border-box;
          background: radial-gradient(1200px 700px at 30% 10%, rgba(124,92,255,.22), transparent 60%),
                      radial-gradient(900px 600px at 90% 100%, rgba(34,211,238,.16), transparent 60%), rgba(9,10,14,.96); }
-.startCard { width: min(1080px, 94vw); background: var(--glass); border: 1px solid var(--line); border-radius: 24px;
+.startCard { margin: auto; width: min(1080px, 94vw); box-sizing: border-box; background: var(--glass); border: 1px solid var(--line); border-radius: 24px;
              padding: 26px 30px; box-shadow: 0 30px 80px rgba(0,0,0,.5); }
 .startHead { display: flex; align-items: center; gap: 16px; margin-bottom: 18px; }
 .logo { width: 54px; height: 54px; border-radius: 16px; display: grid; place-items: center; font-size: 30px;
@@ -87,8 +87,156 @@
 #handBox .row { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-size: 12px; color: #8f97a8; }
 #handBox .keys { margin-top: 6px; font-size: 12px; color: #9aa1b0; }
 @media (max-width: 820px) { .startBody { grid-template-columns: 1fr; } }
+#checklist li .txt { display: flex; flex-direction: column; flex: 1; }
+#checklist li .hint { font-size: 13px; color: #ffc24a; min-height: 0; }
+#checklist li .hint:empty { display: none; }
+#checklist li .anim { display: none; font-size: 30px; line-height: 1; }
+#checklist li.now .anim { display: inline-flex; gap: 4px; }
+.flip { position: relative; display: inline-block; width: 1.2em; height: 1.1em; }
+.flip i { position: absolute; inset: 0; font-style: normal; animation: flipA 1.6s infinite; }
+.flip i + i { animation-name: flipB; }
+@keyframes flipA { 0%, 45% { opacity: 1; } 50%, 95% { opacity: 0; } 100% { opacity: 1; } }
+@keyframes flipB { 0%, 45% { opacity: 0; } 50%, 95% { opacity: 1; } 100% { opacity: 0; } }
+.key { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 7px; font: 700 15px system-ui;
+       background: #2b2f3a; border: 1px solid #4a5161; border-bottom-width: 3px; color: #e8ebf2; }
+/* the repositioning picture (ui.js clutchDemo): 8 s loop. 0-6 % rest, 6-30 % the open hand
+   moves right and the gripper follows (half as far), 30-36 % a fist (PAUSED), 36-60 % the fist
+   back to the left (the gripper stays), 60-66 % open again, 66-90 % on to the right (the gripper
+   carries on), 90-100 % rest and fade into the next loop */
+.demo { width: 100%; max-width: 420px; margin: 10px 0 4px; }
+.demo svg { width: 100%; height: auto; display: block; font-family: var(--sr-font, system-ui); }
+.demo .d-all { animation: dAll 8s infinite; }
+.demo .d-panel { fill: rgba(7,11,24,.75); stroke: rgba(160,180,255,.16); }
+.demo .d-lbl { font-size: 9px; font-weight: 700; letter-spacing: .14em; fill: #7d8aa8; }
+.demo .d-box { fill: none; stroke: #34d399; stroke-width: 1.5; stroke-dasharray: 7 5; }
+.demo .d-hand { animation: dHand 8s infinite cubic-bezier(.45,.05,.55,.95); }
+.demo .d-open rect, .demo .d-fist rect { fill: #f1c9a5; stroke: #c99470; stroke-width: 1; }
+.demo .d-fist .d-thumb { fill: #e7b48c; }
+.demo .d-crease { stroke: #c99470; stroke-width: 1.4; stroke-linecap: round; fill: none; }
+.demo .d-open { animation: dOpen 8s infinite; } .demo .d-fist { animation: dFist 8s infinite; }
+.demo .d-grip { animation: dGrip 8s infinite cubic-bezier(.45,.05,.55,.95); }
+.demo .d-metal { fill: #cfd8ee; } .demo .d-dark { fill: #59627a; } .demo .d-shadow { fill: rgba(0,0,0,.35); }
+.demo .d-table { fill: rgba(160,180,255,.18); }
+.demo .d-chip-go { fill: rgba(52,211,153,.16); stroke: rgba(52,211,153,.6); animation: dOpen 8s infinite; }
+.demo .d-chip-pause { fill: rgba(251,191,36,.16); stroke: rgba(251,191,36,.7); animation: dFist 8s infinite; }
+.demo .d-chip-t { font-size: 9.5px; font-weight: 700; letter-spacing: .08em; text-anchor: middle; }
+.demo .d-t-go { fill: #34d399; animation: dOpen 8s infinite; } .demo .d-t-pause { fill: #fbbf24; animation: dFist 8s infinite; }
+.demo .d-cap { font-size: 12px; font-weight: 600; fill: #e6ebf7; text-anchor: middle; opacity: 0; }
+.demo .d-c1 { animation: dC1 8s infinite; } .demo .d-c2 { animation: dC2 8s infinite; }
+.demo .d-c3 { animation: dC3 8s infinite; } .demo .d-c4 { animation: dC4 8s infinite; }
+@keyframes dAll { 0% { opacity: 0; } 4%, 94% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes dHand { 0%, 6% { transform: translateX(0); } 30%, 36% { transform: translateX(200px); } 60%, 66% { transform: translateX(0); }
+                   90%, 100% { transform: translateX(200px); } }
+@keyframes dGrip { 0%, 6% { transform: translateX(0); } 30%, 66% { transform: translateX(100px); } 90%, 100% { transform: translateX(200px); } }
+@keyframes dOpen { 0%, 31% { opacity: 1; } 34%, 61% { opacity: 0; } 64%, 100% { opacity: 1; } }
+@keyframes dFist { 0%, 31% { opacity: 0; } 34%, 61% { opacity: 1; } 64%, 100% { opacity: 0; } }
+@keyframes dC1 { 0%, 30% { opacity: 1; } 32%, 100% { opacity: 0; } }
+@keyframes dC2 { 0%, 31% { opacity: 0; } 33%, 40% { opacity: 1; } 42%, 100% { opacity: 0; } }
+@keyframes dC3 { 0%, 41% { opacity: 0; } 43%, 61% { opacity: 1; } 63%, 100% { opacity: 0; } }
+@keyframes dC4 { 0%, 62% { opacity: 0; } 64%, 100% { opacity: 1; } }
+/* the repositioning drill (setup): its four parts, ticked off live */
+.drill { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; }
+.drill li { display: flex; gap: 8px; align-items: center; font-size: 13px; color: #8f99b3; padding: 5px 8px; border-radius: 8px; }
+.drill li b { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; font-size: 11px;
+              border: 1.5px solid #4a5370; color: #aab3cc; flex: none; }
+.drill li.now { color: #fff; background: rgba(47,107,255,.14); }
+.drill li.now b { border-color: var(--sr-violet-2, #a78bfa); color: #fff; }
+.drill li.done { color: #cfe1ff; } .drill li.done b { background: var(--sr-sky, #0ea5e9); border-color: var(--sr-sky, #0ea5e9); color: #04121f; }
+#checklist li.now .anim.wide { display: block; width: 100%; padding-left: 34px; box-sizing: border-box; font-size: inherit; line-height: 1.4; }
+#checklist li.now .anim.wide .drill { grid-template-columns: 1fr 1fr; }
+#taskDemo:empty { display: none; }
+#taskCard p.demoNote { font-size: 15px; margin: 0 0 4px; color: #cfe1ff; }
+#taskDemo .demo { max-width: 460px; margin: 4px 0 14px; }
+#checklist li .anim.wide { flex-basis: 100%; }
+#checklist li.now:has(.anim.wide) { flex-wrap: wrap; }
+/* the look-around step: the setup shrinks to a side panel so the 3D view can be tried */
+#start.peek { inset: 16px 16px 16px auto; width: min(440px, 92vw); padding: 0; background: none; overflow-y: auto; }
+#start.peek .startCard { margin: 0; width: 100%; padding: 20px; }
+#start.peek .cam, #start.peek .legend, #start.peek #phoneCam, #start.peek .startHead p, #start.peek .sr-tag { display: none; }
+#start.peek .startBody { grid-template-columns: 1fr; }
+#start.peek #checklist li.done { display: none; }
+#slowBox { margin-top: 6px; }
+#slowBox p { margin: 10px 0 0; font-size: 12px; color: #8f97a8; }
+#slowBtn { margin-left: 8px; }
+#readyBox { margin-top: 6px; padding: 12px 14px; border-radius: 14px; background: rgba(62,224,143,.08); border: 1px solid rgba(62,224,143,.3); }
+#readyBox p { margin: 0 0 12px; color: #d6efe1; font-size: 14px; }
+.help { margin-top: 10px; font-size: 13px; color: #8f97a8; }
+.help a { color: #9bd8ff; }
+#boxWarn { position: fixed; left: 50%; top: 110px; transform: translateX(-50%); z-index: 12; padding: 10px 18px; border-radius: 12px;
+           font-weight: 700; background: rgba(255,194,74,.16); border: 1px solid rgba(255,194,74,.6); color: #ffd98a; }
+#boxWarn.out { background: rgba(255,95,109,.2); border-color: rgba(255,95,109,.75); color: #ffc2c8; }
+#taskBar { position: fixed; right: 18px; bottom: 18px; z-index: 11; display: flex; gap: 10px; align-items: center; }
+#taskBar .btn.ghost { background: rgba(18,20,28,.88); }
+#taskBar .k { display: inline-block; margin-left: 4px; padding: 0 5px; border-radius: 4px; border: 1px solid #4a5161; font-size: 12px; }
+#confirmBox { position: fixed; inset: 0; z-index: 14; display: flex; align-items: center; justify-content: center; background: rgba(9,10,14,.6); }
+#confirmBox .card { width: min(460px, 92vw); background: var(--glass); border: 1px solid var(--line); border-radius: 20px; padding: 24px 26px;
+                    box-shadow: 0 30px 80px rgba(0,0,0,.5); }
+#confirmBox h2 { margin: 0 0 8px; font-size: 22px; }
+#confirmBox p { margin: 0 0 18px; color: #d8dce6; }
+#confirmBox .row { display: flex; gap: 10px; justify-content: flex-end; }
+#taskCard { position: fixed; inset: 0; z-index: 12; display: flex; align-items: center; justify-content: center;
+            background: rgba(9,10,14,.55); pointer-events: none; }
+#taskCard .card { width: min(620px, 92vw); background: var(--glass); border: 1px solid var(--line); border-radius: 20px;
+                  padding: 24px 28px; box-shadow: 0 30px 80px rgba(0,0,0,.5); }
+#taskCard .tag { font: 700 12px system-ui; letter-spacing: .1em; color: var(--acc2); text-transform: uppercase; }
+#taskCard h2 { margin: 6px 0 8px; font-size: 26px; }
+#taskCard p { margin: 0 0 14px; color: #d8dce6; font-size: 17px; }
+#taskCard .ctrls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+#taskCard .ctrls span { font-size: 13px; padding: 6px 10px; border-radius: 10px; background: rgba(255,255,255,.05); border: 1px solid var(--line); }
+#taskCard .meta { font-size: 14px; color: #aab1c0; }
+#taskCard .actions { display: flex; gap: 10px; margin-top: 18px; }
+#taskCard.reading { pointer-events: auto; background: radial-gradient(1000px 640px at 20% 0%, rgba(47,107,255,.22), transparent 60%),
+                    radial-gradient(900px 600px at 100% 100%, rgba(123,92,255,.2), transparent 60%), #0a0e1c; }
+#taskCard.reading #taskClose, #taskCard.info #taskStart { display: none; }
+#taskCard.info { pointer-events: auto; background: rgba(9,10,14,.45); }
+#taskCard.reading .card { width: min(720px, 92vw); padding: 32px 36px; }
+#taskCard.reading h2 { font-size: 32px; }
+#taskCard.reading p { font-size: 19px; line-height: 1.6; }
 #conn { position: fixed; top: 6px; right: 8px; z-index: 20; font-size: 12px; }
     #conn.ok { color: #4cd07d; } #conn.bad { color: #ff7070; }
+  </style>
+  <link rel="stylesheet" href="/test-static/brand.css" /><link rel="icon" type="image/png" href="/test-static/sereact-logo.png">
+  <style>
+    /* ---- Sereact look (brand.css tokens) over the layout above */
+    html, body { background: var(--sr-navy); color: var(--sr-text); }
+    #start { background: radial-gradient(1100px 680px at 18% 0%, rgba(47,107,255,.26), transparent 60%),
+                         radial-gradient(900px 620px at 100% 100%, rgba(123,92,255,.24), transparent 60%),
+                         linear-gradient(180deg, #0b1020, #0a0e1c); }
+    .startCard { background: var(--sr-glass); border-color: var(--sr-line); box-shadow: var(--sr-shadow); backdrop-filter: blur(14px); }
+    .startHead { justify-content: space-between; flex-wrap: wrap; padding-bottom: 16px; border-bottom: 1px solid var(--sr-line); }
+    .startHead h1 { font-size: 26px; margin-top: 10px; }
+    .startHead p { color: var(--sr-muted); }
+    #checklist li { color: var(--sr-faint); }
+    #checklist li.now { color: #fff; background: var(--sr-grad-soft); box-shadow: inset 3px 0 0 var(--sr-blue); }
+    #checklist li.now .tick { border-color: var(--sr-violet-2); box-shadow: 0 0 0 4px rgba(123,92,255,.18); }
+    #checklist li.done { color: #cfe1ff; }
+    #checklist li.done .tick { border-color: var(--sr-sky); background-color: var(--sr-sky); }
+    #checklist li .hint { color: var(--sr-warn); }
+    .cam { border-color: var(--sr-line); background: #070b18; }
+    .legend span, .help { font-size: 12.5px; }
+    .legend span { background: rgba(47,107,255,.07); border-color: var(--sr-line); color: #cdd6ee; }
+    #trackerState.ok, #robotState.ok { color: var(--sr-ok); }
+    #readyBox { background: rgba(14,165,233,.08); border-color: rgba(14,165,233,.35); }
+    #readyBox p { color: #d7ecff; }
+    #top { background: linear-gradient(rgba(8,12,26,.94), rgba(8,12,26,.6) 75%, rgba(8,12,26,0)); }
+    #phaseTitle { font-weight: 700; letter-spacing: -.02em; }
+    #phaseText { color: #cbd3e6; font-weight: 400; }
+    #steps span { background: rgba(160,180,255,.18); }
+    #steps span.on { background: var(--sr-grad); }
+    #timer { font: 600 38px/1 var(--sr-font); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+    #timer.low { color: var(--sr-bad); }
+    #practice { color: var(--sr-violet-2); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; font-size: 11px; }
+    #count { font: 800 150px/1 var(--sr-font); background: var(--sr-grad); -webkit-background-clip: text; background-clip: text; color: transparent;
+             text-shadow: none; filter: drop-shadow(0 8px 30px rgba(64,90,255,.45)); }
+    #toast { background: var(--sr-glass); border-color: var(--sr-line); font-weight: 500; box-shadow: var(--sr-shadow); }
+    #handBox { background: var(--sr-glass); border-color: var(--sr-line); backdrop-filter: blur(10px); }
+    #taskCard .card, #confirmBox .card { border-color: var(--sr-line); box-shadow: var(--sr-shadow); backdrop-filter: blur(14px); }
+    #taskCard .tag { color: var(--sr-sky); }
+    #taskCard .ctrls span { background: rgba(47,107,255,.08); border-color: var(--sr-line); }
+    #done { background: radial-gradient(900px 600px at 50% 0%, rgba(47,107,255,.22), transparent 60%), rgba(8,11,22,.96); }
+    #done .card { background: var(--sr-glass); border-color: var(--sr-line); border-radius: 22px; box-shadow: var(--sr-shadow); }
+    #done .sr-brand { margin-bottom: 18px; }
+    #loading { color: var(--sr-muted); font-weight: 500; }
   </style>
   <script type="importmap">
   { "imports": { "three": "/static/vendor/three/build/three.module.js",
@@ -99,7 +247,7 @@
     window.TELEOP_MONITOR = true;
     // the 3D view leaves the graphics chip to the hand tracker (screen.js lowers it further when
     // the tracker is still slow)
-    window.TELEOP_RENDER = { maxPixels: 1.6e6, maxFps: 40 };
+    window.TELEOP_RENDER = { maxPixels: 4.2e6, maxFps: 60 };
     // the test's configuration (config/screening.toml: [view], [depth_cues], the arm...)
     window.SCREEN_CONFIG = __CONFIG__;
     // the starting view ([view]): by default first-person, like in VR: your eyes at the robot's
@@ -131,25 +279,36 @@
   <div id="start">
     <div class="startCard">
       <div class="startHead">
-        <div class="logo">✋</div>
-        <div><h1>Hand control</h1><p>Your hand drives the robot. No phone, no app: just a camera.</p></div>
+        <div>
+          <span class="sr-brand"><span class="sr-logo" aria-hidden="true"></span><span class="sr-mark">sere<b>act</b></span><span class="sr-divider"></span><span class="sr-product">Teleoperation assessment</span></span>
+          <h1>Set up your hand control</h1><p>Your hand drives the robot.</p>
+        </div>
+        <span class="sr-tag">Setup · about 2 min</span>
       </div>
       <div class="startBody">
         <div class="cam">
           <canvas id="startCam" width="640" height="480"></canvas>
           <span class="chip" id="startChip" style="color:#9aa3b2"><i></i><b>CAMERA OFF</b></span>
-          <div id="camOverlay"><div>Sit about an arm's length from the screen.<br>Press <b>Start the camera</b> and allow it.<br>
-            <span style="color:#7d8596;font-size:13px">The video stays on this computer: only your hand's position is sent.</span></div></div>
+          <div id="camOverlay"><div>Sit an arm's length from the screen.<br>Press <b>Start the camera</b>.<br>
+            <span style="color:#7d8596;font-size:13px">Only used to track your hand. No video is stored.</span></div></div>
         </div>
         <div>
           <ol id="checklist"></ol>
           <button class="btn" id="camBtn">Start the camera</button>
+          <div id="slowBox" class="hidden">
+            <button class="btn" id="serverBtn">Track on our server</button>
+            <button class="btn ghost" id="slowBtn">Continue anyway</button>
+          </div>
+          <div id="readyBox" class="hidden">
+            <p><b>All set.</b> Practice first (not scored), then two games. Keep your hand in the box.</p>
+            <button class="btn" id="goBtn">Start the practice</button>
+          </div>
           <div id="trackerState">Loading the hand tracker…</div>
           <div id="robotState">Connecting to the robot…</div>
-          <div class="legend"><span>✋ open: move the robot</span><span>✊ fist: pause</span><span><b>SPACE</b>: grip / let go</span>
-            <span><b>Q E</b>: turn the gripper</span><span><b>W S A D</b>: tilt it (tasks that need it)</span></div>
-          <div id="phoneCam">No webcam? Use <b>any phone</b> as the camera: lay it flat on the desk, screen up, and
-            <a href="#" id="phoneCamBtn" style="color:#9bd8ff">show its QR code</a>.
+          <div class="legend"><span>✋ open: move the robot</span><span>✊ fist: pause</span><span>🤏 pinch: grip / let go</span>
+            <span><b>Q E</b>: turn the gripper</span><span><b>H</b>: back home</span></div>
+          <div class="help">Trouble? <a href="/help" target="_blank" rel="noopener">Help</a></div>
+          <div id="phoneCam">No webcam? <a href="#" id="phoneCamBtn" style="color:#9bd8ff">Use your phone</a> (flat on the desk, screen up).
             <img id="phoneCamQr" class="hidden" alt="QR code for the phone camera" src="/qrh/__CODE__.svg"></div>
         </div>
       </div>
@@ -159,14 +318,39 @@
   <div id="handBox" class="hidden">
     <canvas id="handPreview" width="640" height="480"></canvas>
     <div class="row"><span class="chip" id="handChip" style="color:#9aa3b2"><i></i><b>NO HAND</b></span><span id="handStats"></span></div>
-    <div class="keys">✋ move · ✊ pause · <b>SPACE</b> grip / let go · <b>Q E</b> turn · <b>W S A D</b> tilt · <b>H</b> home · <b>C</b> bigger camera</div>
+    <div class="keys">✋ move · ✊ pause · 🤏 grip / let go · <b>Q E</b> turn · <b>H</b> home · <b>C</b> bigger camera</div>
   </div>
+  <div id="boxWarn" class="hidden"></div>
+  <div id="taskBar" class="hidden">
+    <button class="btn ghost" id="infoBtn" title="The task again (the clock keeps running)">ⓘ Task info</button>
+    <button class="btn ghost" id="homeBtn" title="Gripper back to start (H)">🏠 Home <span class="k">H</span></button>
+    <button class="btn ghost" id="skipBtn" title="Move on (what you did counts)">Skip task</button>
+    <button class="btn" id="finishBtn" title="End this task now (what you did counts)">Finish task</button>
+  </div>
+  <div id="confirmBox" class="hidden"><div class="card">
+    <h2 id="confirmTitle"></h2>
+    <p id="confirmText"></p>
+    <div class="row"><button class="btn ghost" id="confirmNo">Keep going</button><button class="btn" id="confirmYes"></button></div>
+  </div></div>
+  <div id="taskCard" class="hidden"><div class="card">
+    <div class="tag" id="taskTag"></div>
+    <h2 id="taskTitle"></h2>
+    <p id="taskText"></p>
+    <div id="taskDemo"></div>
+    <div class="ctrls" id="taskCtrls"></div>
+    <div class="meta" id="taskMeta"></div>
+    <div class="actions">
+      <button class="btn" id="taskStart">Start task</button>
+      <button class="btn ghost" id="taskClose">Close</button>
+    </div>
+  </div></div>
 
 
 
   <div id="done" class="hidden"><div class="card">
+    <span class="sr-brand"><span class="sr-logo" aria-hidden="true"></span><span class="sr-mark">sere<b>act</b></span></span>
     <h1>Thank you!</h1>
-    <p>You have finished the test. Your results have been saved.<br>You can close this page now.</p>
+    <p>Your results are saved. You can close this page.</p>
   </div></div>
 
   <div id="loading">Loading the robot…</div>

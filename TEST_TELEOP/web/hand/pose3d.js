@@ -541,8 +541,9 @@ export function fingerShape(wl) {
  *  sample made the filters after it drift toward it. For the same reason, when it lets go the bias
  *  is set against the raw pose smoothed, not the last frame (whose noise would stay as an offset). */
 export class GraspStabilizer {
-  constructor({ threshold = 3.8, window = 8, still = 10, smooth = 0.35, track = 0.2 } = {}) {
+  constructor({ threshold = 3.8, window = 8, still = 10, smooth = 0.35, track = 0.2, rollback = true } = {}) {
     this.threshold = threshold; this.window = window; this.still = still; this.smooth = smooth; this.track = track;
+    this.rollback = rollback;
     this.b = [0, 0, 0]; this.B = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
     this.reset();
   }
@@ -578,7 +579,7 @@ export class GraspStabilizer {
     // the raw pose, lightly smoothed (for setting the bias when it lets go)
     this.raw = this.raw === null || this.raw.pos.length !== pos.length ? { pos: pos.slice(), R }
       : { pos: this.raw.pos.map((x, i) => x + this.track * (pos[i] - x)), R: slerpM(this.raw.R, R, this.track) };
-    if (this.frozen && !wasFrozen && this.outs.length) {
+    if (this.frozen && !wasFrozen && this.outs.length && this.rollback) {
       // it just tripped: back to the output from before the shape began to change, held there
       const o = this.outs[0];
       this.b = o.pos.map((x, i) => x - pos[i]);

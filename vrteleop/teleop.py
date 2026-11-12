@@ -50,7 +50,7 @@ class ArmTeleop:
     def __init__(self, pos_scale: float = 1.0, z_min: float | None = None):
         self.pos_scale = pos_scale
         self.rot_scale = 1.0    # the gripper turns this much of the controller's turn (0.5: half as far)
-        # lowest allowed EE target height (task dependent: cloth needs the fingertips on the table)
+        # lowest allowed EE target height (task dependent)
         self.ws_lo = WORKSPACE_LO.copy()
         if z_min is not None:
             self.ws_lo[2] = z_min
@@ -93,31 +93,39 @@ class ArmTeleop:
         # The client re-aligned the VR world (recenter): re-anchor so the robot doesn't jump.
         epoch = ctrl.get("epoch")
         if self.engaged and (epoch != self._epoch or glitch):
-            self._c0_pos, self._c0_quat = c_pos.copy(), c_quat.copy()
-            self._e0_pos, self._e0_quat = self.target_pos.copy(), self.target_quat.copy()
+            self._anchor(c_pos, c_quat)
         self._epoch = epoch
 
         if not self.engaged and grip > self.ENGAGE_ON:
             self.engaged = True
-            self._c0_pos, self._c0_quat = c_pos.copy(), c_quat.copy()
-            self._e0_pos, self._e0_quat = self.target_pos.copy(), self.target_quat.copy()
+            self._anchor(c_pos, c_quat)
         elif self.engaged and grip < self.ENGAGE_OFF:
             self.engaged = False
 
         if self.engaged:
             dpos = (c_pos - self._c0_pos) * self.pos_scale
             self.target_pos = np.clip(self._e0_pos + dpos, self.ws_lo, WORKSPACE_HI)
-            drot = quat_mul(c_quat, quat_conj(self._c0_quat))   # world-frame delta
-            if self.rot_scale != 1.0:                            # (the same axis, a fraction of the angle)
+            if self.rot_scale == 1.0:
+                drot = quat_mul(c_quat, quat_conj(self._c0_quat))   # world-frame delta
+                self.target_quat = quat_normalize(quat_mul(drot, self._e0_quat))
+            else:
+                # a fraction of the turn, added up sample by sample: the turn since the anchor
+                # taken the shortest way flipped sides past 180 deg (the gripper jumped half round)
+                step = quat_mul(c_quat, quat_conj(self._cq_prev))
                 rv = np.zeros(3)
-                mujoco.mju_quat2Vel(rv, drot if drot[0] >= 0 else -drot, 1.0)
-                drot = np.zeros(4)
+                mujoco.mju_quat2Vel(rv, step if step[0] >= 0 else -step, 1.0)
                 ang = float(np.linalg.norm(rv))
                 if ang > 1e-9:
-                    mujoco.mju_axisAngle2Quat(drot, rv / ang, ang * self.rot_scale)
-                else:
-                    drot[0] = 1.0
-            self.target_quat = quat_normalize(quat_mul(drot, self._e0_quat))
+                    dq = np.zeros(4)
+                    mujoco.mju_axisAngle2Quat(dq, rv / ang, ang * self.rot_scale)
+                    self.target_quat = quat_normalize(quat_mul(dq, self.target_quat))
+                self._cq_prev = c_quat.copy()
+
+    def _anchor(self, c_pos, c_quat):
+        """The clutch takes hold here: the controller's pose now goes with the target's now."""
+        self._c0_pos, self._c0_quat = c_pos.copy(), c_quat.copy()
+        self._cq_prev = c_quat.copy()
+        self._e0_pos, self._e0_quat = self.target_pos.copy(), self.target_quat.copy()
 
     def _is_glitch(self, c_pos, c_quat, t) -> bool:
         """A new sample that jumped further than a hand can move since the previous one? (The

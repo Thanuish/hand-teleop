@@ -259,6 +259,7 @@ class Bot:
         t_end = self.d.time + timeout
         while self.game.phase.key != key and self.d.time < t_end:
             self.advance(0.1)
+        self.game.task_ready()                         # (the bot "reads" the description at once)
         while self.game.intro_until is not None and self.d.time < t_end:
             self.advance(0.1)
         assert self.game.phase.key == key, f"expected phase {key}, got {self.game.phase.key}"

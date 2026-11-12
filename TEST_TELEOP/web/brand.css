@@ -1,0 +1,57 @@
+/* Sereact look for every page of the test: the company's type (Montserrat), its navy ink and
+   blues (sereact.ai: ink hsl(226 18% 14%), deep blue hsl(211 89% 28%), sky #0ea5e9), with a
+   violet that runs from the blue for the accents. Pages use the tokens below; screen.html's own
+   names (--acc1, --acc2, --glass, --line) map onto them. */
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&display=swap');
+
+:root {
+  --sr-ink: #1d202a;            /* Sereact's text colour, the darkest surface here */
+  --sr-navy: #0b1020;           /* the page background */
+  --sr-navy-2: #121a33;         /* panels */
+  --sr-blue-deep: #08427a;      /* Sereact deep blue */
+  --sr-blue: #2f6bff;           /* the main accent */
+  --sr-sky: #0ea5e9;            /* Sereact sky blue */
+  --sr-violet: #7b5cff;         /* the complementary violet */
+  --sr-violet-2: #a78bfa;
+  --sr-text: #eef1f8;
+  --sr-muted: #a3acc2;
+  --sr-faint: #6f7891;
+  --sr-ok: #34d399; --sr-warn: #fbbf24; --sr-bad: #fb7185;
+  --sr-line: rgba(160, 180, 255, .14);
+  --sr-glass: rgba(16, 22, 44, .82);
+  --sr-grad: linear-gradient(120deg, var(--sr-blue) 0%, #5a5cff 50%, var(--sr-violet) 100%);
+  --sr-grad-soft: linear-gradient(120deg, rgba(47,107,255,.18), rgba(123,92,255,.18));
+  --sr-radius: 16px;
+  --sr-shadow: 0 24px 70px rgba(3, 6, 20, .55);
+  --sr-font: 'Montserrat', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+
+  /* screen.html's names */
+  --acc1: var(--sr-blue); --acc2: var(--sr-violet); --glass: var(--sr-glass); --line: var(--sr-line);
+}
+
+html, body { font-family: var(--sr-font); }
+body { letter-spacing: .005em; }
+h1, h2, h3 { font-family: var(--sr-font); letter-spacing: -.015em; }
+h1 { font-weight: 700; } h2 { font-weight: 600; }
+
+/* the wordmark: Sereact's logo (on a white tile, its colours as they are: its navy end would
+   vanish on the dark pages), "sereact" in light Montserrat, the product name beside it */
+.sr-brand { display: inline-flex; align-items: center; gap: 12px; text-decoration: none; color: var(--sr-text); }
+.sr-logo { flex: none; width: 34px; height: 34px; border-radius: 9px; background: #fff url('/test-static/sereact-logo.png') center / 128% no-repeat;
+           box-shadow: 0 4px 14px rgba(47, 107, 255, .25); }
+.sr-mark { font: 300 26px/1 var(--sr-font); letter-spacing: -.02em; color: #fff; }
+.sr-mark b { font-weight: 300; background: var(--sr-grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.sr-divider { width: 1px; height: 26px; background: var(--sr-line); }
+.sr-product { font: 600 12px/1.2 var(--sr-font); letter-spacing: .14em; text-transform: uppercase; color: var(--sr-muted); }
+
+/* buttons */
+.btn, button.sr { font-family: var(--sr-font) !important; font-weight: 600 !important; letter-spacing: .01em; }
+.btn:not(.ghost) { background: var(--sr-grad) !important; box-shadow: 0 10px 28px rgba(64, 90, 255, .35) !important; }
+.btn:not(.ghost):hover { filter: brightness(1.08); }
+.btn.ghost { border-color: rgba(160,180,255,.28) !important; color: #dfe5f5 !important; }
+.btn.ghost:hover { border-color: var(--sr-violet-2) !important; }
+a { color: #8fb8ff; }
+
+/* chips, tags */
+.sr-tag { display: inline-block; font: 700 11px/1 var(--sr-font); letter-spacing: .14em; text-transform: uppercase;
+          padding: 6px 10px; border-radius: 999px; color: #cfd8ff; background: var(--sr-grad-soft); border: 1px solid var(--sr-line); }

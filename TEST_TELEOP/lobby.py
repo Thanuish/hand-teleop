@@ -1,18 +1,21 @@
 ﻿"""The screening lobby: the one web server candidates connect to (through a tunnel such as
-Cloudflare Tunnel for remote candidates). It hands out invite codes, runs one simulator per
-candidate (TEST_TELEOP.worker --task screen, on a local port), relays the candidate's monitor
-page and phone to it, and shows the results to you.
+Cloudflare Tunnel for remote candidates). One public link: a candidate enters name + email and
+agrees to the recording, once per email. It runs one simulator per candidate
+(TEST_TELEOP.worker --task screen, on a local port), relays the candidate's monitor page (and
+a phone used as the camera) to it, and shows the results to you.
 
-    python -m TEST_TELEOP.lobby batch "October A" --n 15   # create 15 invite codes
     python -m TEST_TELEOP.lobby serve --tunnel             # start (or: start_screening.bat)
 
-Candidate:  /                 enter invite code + name, consent
-            /play/<code>      the monitor page: the robot, the instructions, a QR code
-            /m/<code>         the phone controller (Chrome on Android, WebXR motion tracking)
-You:        /admin            results, ranking, pass / fail, new invite codes (this PC only)
+Candidate:  /                 name + email, consent (one attempt per email; a cookie lets the
+                              same browser come back to a test in progress)
+            /play/<code>      the test page: the robot, the instructions, the hand control
+            /h/<code>         a phone as the hand camera (QR code on the test page)
+You:        /admin            results, ranking, pass / fail, allow a retake (this PC only)
+            /t/<token>        a test run of your own (link on the admin page)
 
 The test itself (phases, objects, scoring, pass mark): config/screening.toml (see
-TEST_TELEOP/config.py). Data: data/screening/candidates.json (codes, names, status),
+TEST_TELEOP/config.py). Data: data/screening/screening.db (SQLite: one row per attempt with its
+hidden code, email, name, status),
 data/screening/settings.json (how many at a time, idle timeout), and per candidate
 data/screening/<batch>/<code>/screen/attempt/ (results.json, the configuration it ran with,
 one episode file per phase, the simulator's log).
@@ -28,10 +31,13 @@ import io
 import json
 import os
 import secrets
+import re
 import socket
+import sqlite3
 import subprocess
 import sys
 import time
+from contextlib import closing
 from pathlib import Path
 
 import aiohttp
@@ -40,22 +46,28 @@ from aiohttp import WSMsgType, web
 from vrteleop import scene as S
 
 from . import config as C
+from . import recommend as R
+from . import tracker
 
 ROOT = S.ROOT
 WEB_DIR = ROOT / "vrteleop" / "web"                  # the 3D viewer (main.js) and three.js
 TEST_WEB = Path(__file__).resolve().parent / "web"   # this test's pages
 DATA = ROOT / "data" / "screening"
-CANDIDATES = DATA / "candidates.json"
+CANDIDATES = DATA / "candidates.json"                 # (before the database: moved into it once)
+DB = DATA / "screening.db"
 SETTINGS = DATA / "settings.json"
-DEFAULT_SETTINGS = {"max_concurrent": 15, "idle_timeout_min": 20}
+# accepting: new candidates may start (off: "closed for a short update", for a deploy: tests
+# already running go on). The environment can set the starting values (a container: MAX_CONCURRENT)
+DEFAULT_SETTINGS = {"max_concurrent": int(os.environ.get("MAX_CONCURRENT", 15)), "idle_timeout_min": 20, "accepting": True}
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"     # no 0/O, 1/I
 
 
 # ---------------------------------------------------------------- storage
 def set_data_dir(path: Path):
-    global DATA, CANDIDATES, SETTINGS
+    global DATA, CANDIDATES, DB, SETTINGS
     DATA = path.resolve()
     CANDIDATES = DATA / "candidates.json"
+    DB = DATA / "screening.db"
     SETTINGS = DATA / "settings.json"
 
 
@@ -106,26 +118,196 @@ def cfg() -> C.Config:
 _cfg_state = {"good": None, "error": None}
 
 
+FIELDS = ("email", "name", "batch", "created", "status", "started", "finished", "only")
+_db_ready: set[Path] = set()
+
+
+def _db() -> sqlite3.Connection:
+    """The candidates database (one row per attempt; the code is the attempt's hidden id). Made,
+    and an old candidates.json moved into it, the first time it is opened."""
+    first = DB not in _db_ready
+    if first:
+        DB.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(DB, timeout=10)
+    con.row_factory = sqlite3.Row
+    if first:
+        con.execute("PRAGMA journal_mode=WAL")
+        con.executescript("""
+            CREATE TABLE IF NOT EXISTS candidates (
+                code TEXT PRIMARY KEY, email TEXT, name TEXT NOT NULL DEFAULT '', batch TEXT NOT NULL,
+                created TEXT, status TEXT NOT NULL, started TEXT, finished TEXT, only TEXT);
+            CREATE INDEX IF NOT EXISTS candidates_email ON candidates(email);
+            -- one attempt per email; an admin's "Allow retake" marks the old one 'reset'
+            CREATE UNIQUE INDEX IF NOT EXISTS candidates_email_live ON candidates(email)
+                WHERE email IS NOT NULL AND status != 'reset';
+            -- the people invited (imported from Ashby on the admin page): matched to attempts by email
+            CREATE TABLE IF NOT EXISTS invites (
+                email TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', job TEXT NOT NULL DEFAULT '',
+                invited_at TEXT, imported_at TEXT);""")
+        _migrate_json(con)
+        _db_ready.add(DB)
+    return con
+
+
+def _migrate_json(con: sqlite3.Connection):
+    """The invite-code era kept candidates in candidates.json: copy them in once, keep the file
+    as candidates.json.bak."""
+    if not CANDIDATES.exists():
+        return
+    old = _load(CANDIDATES, None)
+    if not isinstance(old, dict):
+        return
+    with con:
+        for code, c in old.items():
+            con.execute("INSERT OR IGNORE INTO candidates (code, email, name, batch, created, status, started, "
+                        "finished, only) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?)",
+                        (code, c.get("name") or "", c.get("batch") or "batch", c.get("created"),
+                         c.get("status") or "new", c.get("started"), c.get("finished"), c.get("only")))
+    CANDIDATES.replace(CANDIDATES.with_name("candidates.json.bak"))
+    print(f"[lobby] moved {len(old)} candidates from {_rel(CANDIDATES)} into {_rel(DB)} (old file: candidates.json.bak)")
+
+
 def candidates() -> dict:
-    return _load(CANDIDATES, {})
+    """code -> record (email, name, batch, created, status, started, finished, only)."""
+    with closing(_db()) as con:
+        return {r["code"]: {k: r[k] for k in FIELDS} for r in con.execute("SELECT * FROM candidates ORDER BY created")}
 
 
-def new_batch(name: str, n: int, only: str | None = None) -> list[str]:
-    """n invite codes. only: a phase key (e.g. "tilt"): a test code that runs just that part."""
+def candidate(code: str) -> dict | None:
+    with closing(_db()) as con:
+        r = con.execute("SELECT * FROM candidates WHERE code = ?", (code,)).fetchone()
+    return {k: r[k] for k in FIELDS} if r else None
+
+
+def attempt_of(email: str) -> tuple[str, dict] | None:
+    """The email's current attempt (not one an admin reset), if any."""
+    with closing(_db()) as con:
+        r = con.execute("SELECT * FROM candidates WHERE email = ? AND status != 'reset'", (email,)).fetchone()
+    return (r["code"], {k: r[k] for k in FIELDS}) if r else None
+
+
+def update_candidate(code: str, **fields):
+    assert set(fields) <= set(FIELDS)
+    with closing(_db()) as con, con:
+        con.execute(f"UPDATE candidates SET {', '.join(f'{k} = ?' for k in fields)} WHERE code = ?",
+                    (*fields.values(), code))
+
+
+def delete_candidate(code: str):
+    with closing(_db()) as con, con:
+        con.execute("DELETE FROM candidates WHERE code = ?", (code,))
+
+
+def new_candidate(batch: str, name: str = "", email: str | None = None, only: str | None = None,
+                  status: str = "playing") -> str:
+    """A new attempt with a fresh hidden code. only: a phase key (e.g. "tilt"): a test run of just
+    that part. Raises sqlite3.IntegrityError if the email already has an attempt."""
     if only and only not in [p.key for p in cfg().task_phases]:
         raise ValueError(f"no task phase '{only}'")
-    cands = candidates()
-    codes = []
-    for _ in range(n):
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    with closing(_db()) as con, con:
         while True:
             code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(8))
-            if code not in cands:
+            if con.execute("SELECT 1 FROM candidates WHERE code = ?", (code,)).fetchone() is None:
                 break
-        cands[code] = {"batch": name, "created": time.strftime("%Y-%m-%d %H:%M"), "name": "",
-                       "status": "new", "started": None, "finished": None, "only": only or None}
-        codes.append(code)
-    _save(CANDIDATES, cands)
-    return codes
+        con.execute("INSERT INTO candidates (code, email, name, batch, created, status, started, finished, only) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+                    (code, email, name, batch, now, status, now if status == "playing" else None, only or None))
+    return code
+
+
+def invites() -> dict:
+    """email -> {name, job, invited_at, imported_at}."""
+    with closing(_db()) as con:
+        return {r["email"]: dict(name=r["name"], job=r["job"], invited_at=r["invited_at"], imported_at=r["imported_at"])
+                for r in con.execute("SELECT * FROM invites")}
+
+
+def save_invites(people: list[dict]) -> tuple[int, int]:
+    """Add or update invited people (email, name, job, invited_at). Returns (added, updated)."""
+    now = time.strftime("%Y-%m-%d %H:%M")
+    added = updated = 0
+    with closing(_db()) as con, con:
+        for p in people:
+            old = con.execute("SELECT 1 FROM invites WHERE email = ?", (p["email"],)).fetchone()
+            con.execute("INSERT INTO invites (email, name, job, invited_at, imported_at) VALUES (?, ?, ?, ?, ?) "
+                        "ON CONFLICT(email) DO UPDATE SET name = excluded.name, job = excluded.job, "
+                        "invited_at = excluded.invited_at, imported_at = excluded.imported_at",
+                        (p["email"], p.get("name", ""), p.get("job", ""), p.get("invited_at"), now))
+            added += old is None
+            updated += old is not None
+    return added, updated
+
+
+def delete_invite(email: str):
+    with closing(_db()) as con, con:
+        con.execute("DELETE FROM invites WHERE email = ?", (email,))
+
+
+_DATE_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ",
+                 "%Y-%m-%d", "%d.%m.%Y %H:%M", "%d.%m.%Y", "%d/%m/%Y %H:%M", "%d/%m/%Y", "%m/%d/%Y %H:%M", "%m/%d/%Y",
+                 "%b %d, %Y", "%d %b %Y", "%B %d, %Y")
+
+
+def _date(s: str) -> str | None:
+    """A date as Ashby (or a person) writes it -> 'YYYY-MM-DD HH:MM'; None if it isn't one."""
+    import datetime as dt
+    s = (s or "").strip()
+    for f in _DATE_FORMATS:
+        try:
+            return dt.datetime.strptime(s, f).strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            pass
+    return None
+
+
+def parse_invites(text: str) -> tuple[list[dict], list[str]]:
+    """People from a pasted list or an Ashby CSV export: one per line, comma / tab / semicolon
+    separated. With a header row, its columns are found by name (name / first + last name,
+    email, a date: invited / sent / date, job / role / position); without one, the email is
+    whatever looks like one, the date whatever parses as one, the name the first other cell.
+    Returns (people, problems)."""
+    lines = [l for l in text.replace("\r\n", "\n").split("\n") if l.strip()]
+    if not lines:
+        return [], ["Nothing to import."]
+    try:
+        dialect = csv.Sniffer().sniff("\n".join(lines[:20]), delimiters=",\t;")
+    except csv.Error:
+        dialect = csv.excel
+    rows = list(csv.reader(lines, dialect))
+    head = [h.strip().lower() for h in rows[0]]
+    # (a header word at a word's start: "Candidate Name" is no date column)
+    col = lambda *words: next((i for i, h in enumerate(head) if any(re.search(r"\b" + w, h) for w in words)), None)
+    has_header = not any(EMAIL_RE.fullmatch(c.strip().lower()) for c in rows[0]) and col("email", "e-mail", "mail") is not None
+    people, problems, seen = [], [], set()
+    if has_header:
+        ie, i_name, i_first, i_last = col("email", "e-mail", "mail"), col("full name", "candidate name"), col("first"), col("last")
+        i_name = i_name if i_name is not None else next((i for i, h in enumerate(head) if h == "name"), None)
+        i_date, i_job = col("invit", "sent", "date", "created", "activity", "applied"), col("job", "role", "position", "posting")
+    else:                                   # (a pasted list: each line split on its own, tabs, commas or semicolons)
+        rows = [re.split(r"[\t;,]", l) for l in lines]
+    for n, r in enumerate(rows[1:] if has_header else rows, start=2 if has_header else 1):
+        cells = [c.strip() for c in r]
+        get = lambda i: cells[i] if i is not None and i < len(cells) else ""
+        if has_header:
+            email = get(ie).lower()
+            name = get(i_name) or " ".join(x for x in (get(i_first), get(i_last)) if x)
+            when, job = _date(get(i_date)), get(i_job)
+        else:
+            email = next((c.lower() for c in cells if EMAIL_RE.fullmatch(c.lower())), "")
+            others = [c for c in cells if c.lower() != email]
+            when = next((d for d in map(_date, others) if d), None)
+            name = next((c for c in others if c and not _date(c)), "")
+            job = ""
+        if not EMAIL_RE.fullmatch(email):
+            problems.append(f"line {n}: no email address")
+            continue
+        if email in seen:
+            continue
+        seen.add(email)
+        people.append(dict(email=email, name=" ".join(name.split())[:80], job=job[:80],
+                           invited_at=when or time.strftime("%Y-%m-%d %H:%M")))
+    return people, problems
 
 
 def test_token() -> str:
@@ -265,16 +447,29 @@ class Worker:
 # ---------------------------------------------------------------- pages
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title>
+<link rel="stylesheet" href="/test-static/brand.css"><link rel="icon" type="image/png" href="/test-static/sereact-logo.png">
 <style>
- body {{ margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
-        background:#15171c; color:#e8e8e8; font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }}
- .card {{ background:#1f2229; border:1px solid #333; border-radius:14px; padding:28px 32px; max-width:560px; margin:16px; }}
- h1 {{ font-size:22px; margin:0 0 12px; }} p {{ color:#c4c4c4; }}
- input[type=text] {{ width:100%; box-sizing:border-box; padding:10px 12px; margin:6px 0 14px; font:inherit;
-        background:#111; color:#eee; border:1px solid #444; border-radius:8px; }}
- button {{ background:#2f6fde; color:#fff; border:0; border-radius:8px; padding:11px 20px; font:inherit; cursor:pointer; }}
- .err {{ color:#ff8080; }} label {{ color:#c4c4c4; }} small {{ color:#888; }}
-</style></head><body><div class="card">{body}</div></body></html>"""
+ body {{ margin:0; min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; box-sizing:border-box;
+        padding:16px; color:var(--sr-text); font:16px/1.6 var(--sr-font);
+        background: radial-gradient(1000px 640px at 15% 0%, rgba(47,107,255,.24), transparent 60%),
+                    radial-gradient(900px 600px at 100% 100%, rgba(123,92,255,.22), transparent 60%), var(--sr-navy); }}
+ .card {{ background:var(--sr-glass); border:1px solid var(--sr-line); border-radius:22px; padding:30px 34px; max-width:560px;
+         width:100%; box-sizing:border-box; box-shadow:var(--sr-shadow); backdrop-filter:blur(14px); }}
+ .card > .sr-brand {{ margin-bottom:22px; }}
+ h1 {{ font-size:26px; margin:0 0 12px; }} p {{ color:#cbd3e6; }}
+ input[type=text], input[type=email] {{ width:100%; box-sizing:border-box; padding:12px 14px; margin:6px 0 16px; font:inherit;
+        background:rgba(7,11,24,.7); color:#eef1f8; border:1px solid var(--sr-line); border-radius:12px; outline:none; }}
+ input[type=text]:focus, input[type=email]:focus {{ border-color:var(--sr-violet-2); box-shadow:0 0 0 4px rgba(123,92,255,.18); }}
+ button {{ background:var(--sr-grad); color:#fff; border:0; border-radius:14px; padding:13px 26px; font:600 16px var(--sr-font);
+          cursor:pointer; box-shadow:0 10px 28px rgba(64,90,255,.35); }}
+ button:hover {{ filter:brightness(1.08); }}
+ .err {{ color:var(--sr-bad); }} label {{ color:#cbd3e6; font-size:14px; font-weight:500; }} small {{ color:var(--sr-faint); }}
+ .foot {{ margin-top:18px; font-size:12px; color:var(--sr-faint); }}
+ .notice {{ border:1px solid var(--sr-line); background:rgba(47,107,255,.10); border-radius:14px; padding:14px 18px; margin:6px 0 4px; }}
+ .notice p {{ margin:8px 0 0; font-size:14px; }} .notice .small {{ font-size:13px; color:var(--sr-faint); }}
+</style></head><body><div class="card">
+<span class="sr-brand"><span class="sr-logo" aria-hidden="true"></span><span class="sr-mark">sere<b>act</b></span><span class="sr-divider"></span><span class="sr-product">Teleoperation assessment</span></span>
+{body}</div><div class="foot">© Sereact GmbH</div></body></html>"""
 
 
 def page(title, body, status=200):
@@ -282,19 +477,35 @@ def page(title, body, status=200):
                         status=status, headers={"Cache-Control": "no-store"})
 
 
-JOIN_FORM = """<h1>Robot control test</h1>
-<p>You will control a robot arm in a simulation with your phone and do three short manipulation
-tasks, after a practice round. It takes about 20 minutes.</p>
-<p><b>You need:</b> this computer (keep this page open on its screen) and an <b>Android phone</b>
-with Chrome. You will scan a QR code with the phone.</p>
+JOIN_FORM = """<h1>Robot teleoperation test</h1>
+<p>You will control a robot gripper in a simulation with your <b>bare hand</b> in front of your
+webcam, and play two short games after a practice round. It takes about 15-20 minutes.</p>
+<p><b>You need:</b> a computer with a webcam, Chrome or Edge, good light on your hand. A short setup
+checks everything before you start. <a href="/help" target="_blank" rel="noopener">Help: what you need, camera, controls</a></p>
+<p>You can take the test once. Use the email address you applied with.</p>
 {error}
 <form method="post" action="/join">
- <label>Invite code</label><input type="text" name="code" value="{code}" autocomplete="off" required>
- <label>Your name</label><input type="text" name="name" value="{name}" required>
+ <label>Your name</label><input type="text" name="name" value="{name}" autocomplete="name" maxlength="80" required>
+ <label>Your email</label><input type="email" name="email" value="{email}" autocomplete="email" maxlength="254" required>
+ <div class="notice"><b>📷 Your camera</b>
+  <p>The test uses your webcam <b>only to track your hand</b> while you do the tasks. The video is processed in
+ your browser and is <b>not recorded or stored</b>: only your hand's position (21 points) is sent, to move the robot.</p></div>
+ <p><label><input type="checkbox" name="camera" required> I understand that the test uses my camera only to track my
+ hand during the tasks, and that no video of me is recorded or stored.</label></p>
  <p><label><input type="checkbox" name="consent" required> I agree that my control of the robot
  is recorded and scored for this application. The recording is used only to evaluate the test.</label></p>
  <button type="submit">Start</button>
 </form>"""
+
+ALREADY_TAKEN = """<h1>You've already taken the test</h1>
+<p>There is already an attempt for this email.</p>
+<p>Something went wrong? Contact the person who sent you the link: they can allow a retake.</p>"""
+
+CLOSED = """<h1>Back in a few minutes</h1>
+<p>Short update in progress. Please try again in a few minutes.</p>"""
+
+ATTEMPT_COOKIE = "screening_attempt"
+EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 
 
 def make_app(args) -> web.Application:
@@ -337,7 +548,10 @@ def make_app(args) -> web.Application:
                          daemon=True).start()
 
     def public_url():
-        """The in-process tunnel's address, or the one a separate `tunnel` process wrote."""
+        """The site's public address: PUBLIC_URL (hosted: e.g. https://teleop.sereact.ai), else
+        the in-process tunnel's, else the one a separate `tunnel` process wrote."""
+        if os.environ.get("PUBLIC_URL"):
+            return os.environ["PUBLIC_URL"].rstrip("/")
         if tunnel_state["url"]:
             return tunnel_state["url"]
         info = _load(tunnel_file(), None)
@@ -346,13 +560,41 @@ def make_app(args) -> web.Application:
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
 
+    ADMIN_USER, ADMIN_PASSWORD = os.environ.get("ADMIN_USER", "admin"), os.environ.get("ADMIN_PASSWORD", "")
+    # ADMIN_LOCAL_OPEN=0 (the container): always the sign-in, also from this machine (a proxy on the
+    # same server forwarding to 127.0.0.1 would otherwise look local)
+    LOCAL_OPEN = os.environ.get("ADMIN_LOCAL_OPEN", "1") != "0"
+
     def local_only(handler):
+        """The admin pages: open on this computer (a request from itself, not through a proxy or
+        tunnel); from anywhere else only with ADMIN_USER / ADMIN_PASSWORD (the browser's sign-in
+        box, HTTP Basic: the site is https); without a password set, not from anywhere else."""
         async def wrapped(request):
-            if request.remote not in ("127.0.0.1", "::1") or "cf-connecting-ip" in request.headers \
-                    or "x-forwarded-for" in request.headers:
-                return web.Response(status=403, text="the admin pages only open on the screening PC")
+            local = LOCAL_OPEN and request.remote in ("127.0.0.1", "::1") and "cf-connecting-ip" not in request.headers \
+                and "x-forwarded-for" not in request.headers
+            if not local:
+                if not ADMIN_PASSWORD:
+                    return web.Response(status=403, text="The admin pages are closed here: set ADMIN_PASSWORD to open them.")
+                ok = False
+                auth = request.headers.get("Authorization", "")
+                if auth.startswith("Basic "):
+                    import base64
+                    try:
+                        user, _, pw = base64.b64decode(auth[6:]).decode("utf-8").partition(":")
+                        ok = secrets.compare_digest(user, ADMIN_USER) & secrets.compare_digest(pw, ADMIN_PASSWORD)
+                    except (ValueError, UnicodeDecodeError):
+                        ok = False
+                if not ok:
+                    return web.Response(status=401, text="Sign in to the screening admin.",
+                                        headers={"WWW-Authenticate": 'Basic realm="Sereact screening admin", charset="UTF-8"'})
             return await handler(request)
         return wrapped
+
+    async def healthz(_):
+        """For the load balancer / Docker: alive, and how full."""
+        busy = sum(1 for w in workers.values() if w.alive())
+        st = settings()
+        return web.json_response({"ok": True, "running": busy, "capacity": st["max_concurrent"], "accepting": st["accepting"]})
 
     def public_base(request) -> str:
         proto = request.headers.get("X-Forwarded-Proto", request.scheme)
@@ -360,7 +602,7 @@ def make_app(args) -> web.Application:
 
     def lookup(code: str):
         code = (code or "").strip().upper()
-        return code, candidates().get(code)
+        return code, candidate(code)
 
     async def ensure_worker(code: str, c: dict) -> Worker:
         w = workers.get(code)
@@ -382,50 +624,71 @@ def make_app(args) -> web.Application:
             await asyncio.sleep(10)
             st = settings()
             cands = candidates()
-            changed = False
             for code, w in list(workers.items()):
                 c = cands.get(code)
                 res = results_of(code, c) if c else None
-                if res and res.get("finished") and c.get("status") != "done":
+                if res and res.get("finished") and c.get("status") == "playing":
                     c["status"], c["finished"] = "done", res.get("finished_at")
-                    changed = True
+                    update_candidate(code, status="done", finished=c["finished"])
                 idle = w.clients == 0 and time.time() - w.last_seen > 60 * st["idle_timeout_min"]
                 done_idle = res and res.get("finished") and w.clients == 0 and time.time() - w.last_seen > 30
                 if not w.alive() or idle or done_idle:
                     w.stop()
                     del workers[code]
                     if c and c.get("status") == "playing" and not (res and res.get("finished")):
-                        c["status"] = "abandoned"
-                        changed = True
-            if changed:
-                _save(CANDIDATES, cands)
+                        update_candidate(code, status="abandoned")
 
     # ---- candidate pages
     async def index(request):
-        return page("Robot control test", JOIN_FORM.format(error="", code=html.escape(request.query.get("code", "")), name=""))
+        if not settings()["accepting"]:
+            return page("Sereact · Teleoperation test", CLOSED)
+        return page("Sereact · Teleoperation test", JOIN_FORM.format(error="", name="", email=""))
+
+    def to_play(request, code):
+        """Off to the test, with the attempt's code in a cookie: the same browser may come back."""
+        resp = web.Response(status=302, headers={"Location": f"/play/{code}", "Cache-Control": "no-store"})
+        https = request.headers.get("X-Forwarded-Proto", request.scheme) == "https"
+        resp.set_cookie(ATTEMPT_COOKIE, code, max_age=7 * 24 * 3600, path="/", httponly=True,
+                        samesite="Lax", secure=https)
+        return resp
 
     async def join(request):
         form = await request.post()
-        code, c = lookup(form.get("code", ""))
-        name = (form.get("name") or "").strip()[:80]
+        name = " ".join((form.get("name") or "").split())[:80]
+        email = (form.get("email") or "").strip().lower()
 
         def again(msg):
-            return page("Robot control test", JOIN_FORM.format(error=f'<p class="err">{html.escape(msg)}</p>',
-                                                              code=html.escape(code), name=html.escape(name)))
-        if c is None:
-            return again("This invite code doesn't exist. Check it and try again.")
+            return page("Sereact · Teleoperation test", JOIN_FORM.format(error=f'<p class="err">{html.escape(msg)}</p>',
+                                                              name=html.escape(name), email=html.escape(email)))
+        if not name:
+            return again("Please enter your name.")
+        if len(email) > 254 or not EMAIL_RE.fullmatch(email):
+            return again("Please enter a valid email address.")
+        if not form.get("camera"):
+            return again("Please confirm the camera notice to take the test.")
         if not form.get("consent"):
             return again("Please agree to the recording to take the test.")
-        if c["status"] in ("done", "abandoned"):
-            return page("Robot control test", "<h1>Already taken</h1><p>This invite code has been used. "
-                                              "Contact the organiser if you think this is a mistake.</p>")
-        if c["status"] == "new":
-            cands = candidates()
-            cands[code].update(name=name, status="playing", started=time.strftime("%Y-%m-%d %H:%M:%S"))
-            _save(CANDIDATES, cands)
-            c = cands[code]
-        await ensure_worker(code, c)
-        raise web.HTTPFound(f"/play/{code}")
+        prev = attempt_of(email)
+        if prev is not None:
+            code, c = prev
+            if c["status"] == "playing" and secrets.compare_digest(request.cookies.get(ATTEMPT_COOKIE, ""), code):
+                await ensure_worker(code, c)          # the same browser coming back to its test
+                return to_play(request, code)
+            return page("Sereact · Teleoperation test", ALREADY_TAKEN)
+        if not settings()["accepting"]:                # (paused for an update: no new tests)
+            return page("Sereact · Teleoperation test", CLOSED)
+        try:
+            code = new_candidate(time.strftime("%Y-%m"), name=name, email=email)
+        except sqlite3.IntegrityError:                # (the same email, a moment ago)
+            return page("Sereact · Teleoperation test", ALREADY_TAKEN)
+        try:
+            await ensure_worker(code, candidate(code))
+        except web.HTTPException:
+            if code in workers:
+                workers.pop(code).stop()
+            delete_candidate(code)                   # (busy / didn't start: the attempt never began)
+            raise
+        return to_play(request, code)
 
     def static_page(file, code):
         text = (TEST_WEB / file).read_text(encoding="utf-8")
@@ -438,11 +701,11 @@ def make_app(args) -> web.Application:
         (batch "Test runs"), straight into the test (no form): for testing the test itself."""
         if not secrets.compare_digest(request.match_info["token"], test_token()):
             raise web.HTTPNotFound()
-        code = new_batch("Test runs", 1, request.query.get("only") or None)[0]
-        cands = candidates()
-        cands[code].update(name="test run", status="playing", started=time.strftime("%Y-%m-%d %H:%M:%S"))
-        _save(CANDIDATES, cands)
-        await ensure_worker(code, cands[code])
+        try:
+            code = new_candidate("Test runs", name="test run", only=request.query.get("only") or None)
+        except ValueError as e:
+            raise web.HTTPBadRequest(text=str(e))
+        await ensure_worker(code, candidate(code))
         raise web.HTTPFound(f"/play/{code}")
 
     async def play(request):
@@ -452,17 +715,11 @@ def make_app(args) -> web.Application:
         await ensure_worker(code, c)
         return static_page("screen.html", code)
 
-    async def phone(request):
-        code, c = lookup(request.match_info["code"])
-        if c is None or c["status"] != "playing":
-            return page("Robot control test", "<h1>Link not active</h1><p>Open the test on your computer first.</p>")
-        return static_page("phone.html", code)
-
     async def hand_camera(request):
         """A phone as the hand camera (any phone: only its camera and browser are needed)."""
         code, c = lookup(request.match_info["code"])
         if c is None or c["status"] != "playing":
-            return page("Robot control test", "<h1>Link not active</h1><p>Open the test on your computer first.</p>")
+            return page("Sereact · Teleoperation test", "<h1>Link not active</h1><p>Open the test on your computer first.</p>")
         return static_page("hand.html", code)
 
     async def qr_hand(request):
@@ -474,20 +731,6 @@ def make_app(args) -> web.Application:
         segno.make(f"{public_base(request)}/h/{code}", error="m").save(buf, kind="svg", scale=8, border=2,
                                                                         dark="#000", light="#fff")
         return web.Response(body=buf.getvalue(), content_type="image/svg+xml")
-
-    async def qr(request):
-        import segno
-        code, c = lookup(request.match_info["code"])
-        if c is None:
-            raise web.HTTPNotFound()
-        buf = io.BytesIO()
-        segno.make(f"{public_base(request)}/m/{code}", error="m").save(buf, kind="svg", scale=8, border=2,
-                                                                        dark="#000", light="#fff")
-        return web.Response(body=buf.getvalue(), content_type="image/svg+xml")
-
-    async def phone_url(request):
-        code, _ = lookup(request.match_info["code"])
-        return web.json_response({"url": f"{public_base(request)}/m/{code}"})
 
     # ---- relay to the candidate's simulator
     async def scene_json(request):
@@ -542,57 +785,147 @@ def make_app(args) -> web.Application:
     async def admin(_):
         return web.FileResponse(TEST_WEB / "admin.html", headers={"Cache-Control": "no-store"})
 
-    def rows():
+    rec_cache: dict[str, tuple] = {}
+
+    def recommendation(code: str, cand: dict, res: dict | None) -> dict:
+        """recommend.py's verdict for an attempt (cached until its results change; a test still
+        running gets none yet)."""
+        if res is None or cand["status"] == "playing":
+            return {}
+        folder = session_dir(code, cand) / "screen" / "attempt"
+        rp = folder / "results.json"
+        key = (rp.stat().st_mtime if rp.exists() else 0, id(cfg()))
+        hit = rec_cache.get(code)
+        if hit and hit[0] == key:
+            return hit[1]
         c = cfg()
-        practice = [p.key for p in c.task_phases if not p.scored]
+        r = R.recommend(res, R.quality(folder / "hand_tracking.jsonl"), c.scored_phases, c.recommendation,
+                        passed=passed(res) if c.scoring["must_complete"] else None)
+        rec_cache[code] = (key, r)
+        return r
+
+    def rows():
+        """One row per person: an invite (imported from Ashby) and/or their attempts (the latest
+        one's results; earlier ones an admin reset are counted); a test run is a row of its own."""
+        c = cfg()
+        inv = invites()
+        by_email: dict[str, list] = {}
         out = []
         for code, cand in candidates().items():
-            res = results_of(code, cand)
-            sc = (res or {}).get("scores", {})
-            mt = (res or {}).get("metrics", {})
-            r = {"code": code, "batch": cand["batch"], "name": cand.get("name", ""), "status": cand["status"],
-                 "phase": (res or {}).get("phase"), "started": cand.get("started"),
-                 "finished": cand.get("finished") or (res or {}).get("finished_at"),
-                 "practice_done": all(mt.get(k, {}).get("completed") for k in practice),
-                 "reach_efficiency": sc.get("reach_efficiency")}
-            bd = sc.get("breakdown", {})
-            for p in c.scored_phases:           # a score and steps column per scored task (its parts on hover)
-                r[p.key] = sc.get(p.key)
-                r[f"{p.key}_steps"] = f"{mt[p.key]['steps_done']}/{mt[p.key]['steps_total']}" if p.key in mt else ""
-                r[f"{p.key}_parts"] = bd.get(p.key)
-            skills = sc.get("skills") or {}
-            for k in ("completion", "speed", "precision", "economy"):
-                r[k] = skills.get(k)
-            r.update({"overall": sc.get("overall"), "grade": sc.get("grade"), "pass": passed(res), "config": (res or {}).get("config_sha"),
-                      "folder": _rel(session_dir(code, cand)),
-                      "running": code in workers and workers[code].alive(), "only": cand.get("only")})
-            out.append(r)
+            if cand.get("email"):
+                by_email.setdefault(cand["email"], []).append((code, cand))
+            else:
+                out.append(row(code, cand, [(code, cand)], None, c))
+        for email in set(inv) | set(by_email):
+            att = by_email.get(email, [])
+            live = [a for a in att if a[1]["status"] != "reset"]
+            latest = max(live or att, key=lambda a: a[1]["created"] or "") if att else None
+            out.append(row(*(latest or (None, None)), att, inv.get(email), c, email=email))
         return out
+
+    def row(code, cand, attempts, invite, c, email=None):
+        r = {"id": email or code, "code": code, "email": email or "", "test_run": email is None,
+             "invited": invite is not None, "name": (invite or {}).get("name") or (cand or {}).get("name", ""),
+             "job": (invite or {}).get("job", ""), "invited_at": (invite or {}).get("invited_at"),
+             "attempts": len(attempts), "status": cand["status"] if cand else "invited"}
+        if cand is None:
+            return r
+        res = results_of(code, cand)
+        sc, mt = (res or {}).get("scores", {}), (res or {}).get("metrics", {})
+        rec = recommendation(code, cand, res)
+        q = rec.get("quality") or {}
+        r.update({"started": cand.get("started"), "finished": cand.get("finished") or (res or {}).get("finished_at"),
+                  "phase": (res or {}).get("phase"), "only": cand.get("only"), "batch": cand["batch"],
+                  "running": code in workers and workers[code].alive(),
+                  "overall": sc.get("overall"), "grade": sc.get("grade"), "pass": passed(res),
+                  "verdict": rec.get("verdict"), "verdict_label": rec.get("label"),
+                  "learning": (rec.get("learning") or {}).get("score"), "tech": rec.get("technical") or [],
+                  "summary": (rec.get("reasons") or [""])[0], "fps": q.get("fps"),
+                  "skipped": len(rec.get("skipped") or [])})
+        for k in ("completion", "speed", "precision", "economy"):
+            r[k] = (sc.get("skills") or {}).get(k)
+        for p in c.scored_phases:
+            r[p.key] = sc.get(p.key)
+        return r
 
     async def admin_api(_):
         c = cfg()
         return web.json_response({"settings": settings(), "candidates": rows(), "config": c.public(),
                                   "config_path": _rel(c.path), "config_error": _cfg_state["error"],
-                                  "public_url": public_url(), "tunnel": bool(args.tunnel)})
+                                  "public_url": public_url(), "tunnel": bool(args.tunnel),
+                                  "test_path": f"/t/{test_token()}", "verdicts": R.VERDICTS})
 
     async def admin_csv(_):
         buf = io.StringIO()
-        r = [{k: v for k, v in row.items() if not k.endswith("_parts")} for row in rows()]   # (the parts: the page's hover)
-        if r:
-            wr = csv.DictWriter(buf, fieldnames=list(r[0]))
-            wr.writeheader()
-            wr.writerows(r)
+        cols = ["name", "email", "job", "invited", "invited_at", "status", "attempts", "started", "finished", "overall", "grade",
+                "verdict_label", "learning", "completion", "speed", "precision", "economy", "fps", "skipped", "summary"]
+        cols += [p.key for p in cfg().scored_phases]
+        wr = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+        wr.writeheader()
+        wr.writerows(r for r in rows() if not r["test_run"])
         return web.Response(text=buf.getvalue(), content_type="text/csv",
                             headers={"Content-Disposition": 'attachment; filename="screening_results.csv"'})
 
-    async def admin_batch(request):
+    async def admin_report_page(_):
+        return web.FileResponse(TEST_WEB / "admin_report.html", headers={"Cache-Control": "no-store"})
+
+    async def admin_report(request):
+        """Everything about one attempt: the person, all their attempts, the scores per task, the
+        recommendation with its reasons and learning curve, the tracking quality, the files."""
+        code, cand = lookup(request.match_info["code"])
+        if cand is None:
+            raise web.HTTPNotFound()
+        c = cfg()
+        res = results_of(code, cand)
+        rec = recommendation(code, cand, res) if res else {}
+        inv = invites().get(cand["email"]) if cand.get("email") else None
+        others = [dict(code=k, status=v["status"], started=v["started"], finished=v["finished"],
+                       overall=((results_of(k, v) or {}).get("scores") or {}).get("overall"))
+                  for k, v in candidates().items() if cand.get("email") and v.get("email") == cand["email"]]
+        folder = session_dir(code, cand)
+        files = sorted((dict(path=str(p.relative_to(folder)).replace("\\", "/"), size=p.stat().st_size)
+                        for p in folder.rglob("*") if p.is_file() and p.name != "quality.json"),
+                       key=lambda f: f["path"]) if folder.exists() else []
+        tasks = []
+        m, sc = (res or {}).get("metrics", {}), (res or {}).get("scores", {})
+        for p in c.task_phases:
+            if p.key in m:
+                mt = m[p.key]
+                tasks.append(dict(key=p.key, title=p.title, scored=p.scored, score=sc.get(p.key),
+                                  parts=(sc.get("breakdown") or {}).get(p.key), time_s=mt.get("time_s"), limit=p.limit,
+                                  steps=f"{round(mt.get('steps_done') or 0, 2):g}/{mt.get('steps_total')}", completed=mt.get("completed"),
+                                  ended_by=mt.get("ended_by"), grasps=mt.get("grasps"), attempts=mt.get("grasp_attempts"),
+                                  drops=mt.get("drops"), path_m=round(mt.get("path_m") or 0, 2), homes=mt.get("homes", 0)))
+        return web.json_response({
+            "code": code, "candidate": cand, "invite": inv, "attempts": others, "results_at": (res or {}).get("finished_at"),
+            "scores": {k: v for k, v in sc.items() if k != "breakdown"}, "tasks": tasks, "pass": passed(res),
+            "recommendation": {k: v for k, v in rec.items() if k != "quality"}, "quality": rec.get("quality"),
+            "files": files, "running": code in workers and workers[code].alive(), "thresholds": c.recommendation})
+
+    async def admin_file(request):
+        """A file of an attempt's folder (results, recordings, logs), for download."""
+        code, cand = lookup(request.match_info["code"])
+        if cand is None:
+            raise web.HTTPNotFound()
+        folder = session_dir(code, cand).resolve()
+        p = (folder / request.match_info["path"]).resolve()
+        if folder not in p.parents or not p.is_file():          # (nothing outside the attempt's folder)
+            raise web.HTTPNotFound()
+        return web.FileResponse(p, headers={"Content-Disposition": f'attachment; filename="{code}_{p.name}"'})
+
+    async def admin_invites(request):
+        """Import invited people: {text} (a pasted list or an Ashby CSV export). {dry: true}
+        only reads them (the page shows what would be imported)."""
         body = await request.json()
-        try:
-            codes = new_batch(str(body.get("name") or time.strftime("%Y-%m-%d")), int(body.get("n", 15)),
-                              body.get("only") or None)
-        except ValueError as e:
-            raise web.HTTPBadRequest(text=str(e))
-        return web.json_response({"codes": codes})
+        people, problems = parse_invites(str(body.get("text", "")))
+        if body.get("dry"):
+            return web.json_response({"people": people, "problems": problems})
+        added, updated = save_invites(people)
+        return web.json_response({"added": added, "updated": updated, "problems": problems})
+
+    async def admin_invite_delete(request):
+        delete_invite(request.match_info["email"].lower())
+        return web.json_response({"ok": True})
 
     async def admin_settings(request):
         """Lobby settings (settings.json) and the pass rule, which lives in the test's
@@ -617,18 +950,14 @@ def make_app(args) -> web.Application:
         return web.json_response({"settings": st, "config": cfg().public()})
 
     async def admin_reset(request):
-        """Let a candidate take the test again (keeps the old attempt's files, renamed)."""
+        """Let a candidate take the test again: the attempt (its row and folder) is kept, marked
+        'reset', and the email may join again (a new attempt with a new code)."""
         code, c = lookup(request.match_info["code"])
         if c is None:
             raise web.HTTPNotFound()
         if code in workers:
             workers.pop(code).stop()
-        d = session_dir(code, c) / "screen" / "attempt"
-        if d.exists():
-            d.rename(d.with_name(f"attempt_old_{time.strftime('%Y%m%d_%H%M%S')}"))
-        cands = candidates()
-        cands[code].update(status="new", started=None, finished=None)
-        _save(CANDIDATES, cands)
+        update_candidate(code, status="reset")
         return web.json_response({"ok": True})
 
     app["boot"] = int(time.time())
@@ -636,19 +965,25 @@ def make_app(args) -> web.Application:
     app.router.add_post("/join", join)
     app.router.add_get("/play/{code}", play)
     app.router.add_get("/t/{token}", test_run)
-    app.router.add_get("/m/{code}", phone)
-    app.router.add_get("/qr/{code}.svg", qr)
     app.router.add_get("/h/{code}", hand_camera)
     app.router.add_get("/qrh/{code}.svg", qr_hand)
-    app.router.add_get("/phone-url/{code}", phone_url)
     app.router.add_get("/s/{code}/scene.json", scene_json)
     app.router.add_get("/s/{code}/ws", ws_relay)
+    # hand tracking on the server for a computer too slow to do it (tracker.py: a process per user)
+    tracker.add_routes(app, lambda code: code in workers and workers[code].alive(),
+                       delegate=os.environ.get("TRACKER_DELEGATE", "cpu"))
+    app.router.add_get("/healthz", healthz)
+    app.router.add_get("/help", lambda _: web.FileResponse(TEST_WEB / "help.html", headers={"Cache-Control": "no-cache"}))
     app.router.add_get("/admin", local_only(admin))
     app.router.add_get("/admin/api", local_only(admin_api))
     app.router.add_get("/admin/results.csv", local_only(admin_csv))
-    app.router.add_post("/admin/batch", local_only(admin_batch))
     app.router.add_post("/admin/settings", local_only(admin_settings))
     app.router.add_post("/admin/reset/{code}", local_only(admin_reset))
+    app.router.add_get("/admin/report/{code}", local_only(admin_report_page))
+    app.router.add_get("/admin/api/report/{code}", local_only(admin_report))
+    app.router.add_get("/admin/file/{code}/{path:.+}", local_only(admin_file))
+    app.router.add_post("/admin/invites", local_only(admin_invites))
+    app.router.add_post("/admin/invites/delete/{email}", local_only(admin_invite_delete))
     app.router.add_static("/static/", WEB_DIR)
     app.router.add_static("/test-static/", TEST_WEB)
     return app
@@ -657,31 +992,23 @@ def make_app(args) -> web.Application:
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    b = sub.add_parser("batch", help="create invite codes")
-    b.add_argument("name", help="batch name, e.g. 'October A'")
-    b.add_argument("--n", type=int, default=15)
     s = sub.add_parser("serve", help="start the lobby")
-    s.add_argument("--port", type=int, default=8000)
-    s.add_argument("--host", default="127.0.0.1",
+    # (the environment gives the defaults: a container sets HOST=0.0.0.0, PORT, DATA_DIR)
+    s.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8000)))
+    s.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"),
                    help="127.0.0.1 (default): reachable through a tunnel only; 0.0.0.0: also on the local network")
     s.add_argument("--tunnel", action="store_true",
                    help="also start a Cloudflare quick tunnel (needs cloudflared) and show its public address")
-    b.add_argument("--only", default=None, help="test codes that run only this part, e.g. tilt")
     tn = sub.add_parser("tunnel", help="run the public tunnel on its own (its address survives lobby restarts)")
     tn.add_argument("--port", type=int, default=8000)
-    for p in (b, s, tn):
-        p.add_argument("--data", default=str(DATA), help="folder for codes, settings and results")
+    for p in (s, tn):
+        p.add_argument("--data", default=os.environ.get("DATA_DIR", str(DATA)),
+                       help="folder for the candidates database, settings and results (env DATA_DIR)")
     a = ap.parse_args(argv)
     set_data_dir(Path(a.data))
     if a.cmd == "tunnel":
         print(f"  Public tunnel to http://localhost:{a.port} (keep this window open)...", flush=True)
         run_tunnel(a.port)
-        return
-    if a.cmd == "batch":
-        codes = new_batch(a.name, a.n, a.only)
-        print(f"{len(codes)} invite codes for batch '{a.name}' (saved in {_rel(CANDIDATES)}):")
-        for c in codes:
-            print("  ", c)
         return
     if sys.platform == "win32":
         import ctypes
@@ -693,9 +1020,13 @@ def main(argv=None):
     except C.ConfigError as e:
         print(f"\n  The test's configuration has problems; fix them and start again:\n{e}\n")
         sys.exit(1)
+    _db().close()                          # (made, and an old candidates.json moved in, now)
     print(f"  Test configuration: {_rel(c.path)} ({len(c.task_phases)} phases)")
     print(f"\n  Screening lobby: http://localhost:{a.port}   (results: http://localhost:{a.port}/admin)")
-    if a.tunnel:
+    if os.environ.get("PUBLIC_URL"):
+        print(f"  Public address: {os.environ['PUBLIC_URL']}   (admin: /admin, "
+              f"{'sign-in: ADMIN_USER / ADMIN_PASSWORD' if os.environ.get('ADMIN_PASSWORD') else 'closed: no ADMIN_PASSWORD set'})\n")
+    elif a.tunnel:
         print("  Starting the public tunnel (its address appears below and on the admin page)...")
     else:
         print("  Candidates need a public https:// address: the tunnel (a separate window:")

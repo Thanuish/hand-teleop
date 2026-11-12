@@ -5,9 +5,7 @@ collision geoms (group 3 in the Menagerie models) stay hidden. Identical meshes
 (e.g. the same UR5e link used by both arms) are sent once.
 
 Materials (colour, PBR hints, 2D textures with their repeat settings) are exported
-too, so the web view shows the same surfaces as MuJoCo's own renderer. Deformable
-cloth (flex) is sent as a coarse simulation mesh plus a Loop-subdivision matrix;
-the client smooths the streamed vertex positions every frame.
+too, so the web view shows the same surfaces as MuJoCo's own renderer.
 """
 from __future__ import annotations
 
@@ -19,7 +17,6 @@ import json
 import mujoco
 import numpy as np
 
-from . import cloth as C
 from . import textures as T
 
 GEOM_TYPES = {int(k): v for k, v in {
@@ -91,11 +88,9 @@ def _materials(m: mujoco.MjModel, tex: _Textures, used: set[int]):
     return mats
 
 
-def export_scene(m: mujoco.MjModel, max_group: int = 2, cloth: C.ClothInfo | None = None,
-                 web_textures: dict | None = None, subdiv_levels: int = 2, cloth_material: int = -1,
+def export_scene(m: mujoco.MjModel, max_group: int = 2, web_textures: dict | None = None,
                  textures: bool = True, compress: bool = True):
-    """Returns (render_body_ids, gzipped JSON bytes). `cloth` is the garment pattern; a cloth
-    simulated outside MuJoCo (no flex, flex_id < 0) gets its material from `cloth_material`.
+    """Returns (render_body_ids, gzipped JSON bytes).
     textures=False leaves the model's textures out (a client with its own materials);
     compress=False returns the payload as a dict instead of gzipped JSON."""
     body_index: dict[int, int] = {}
@@ -156,45 +151,13 @@ def export_scene(m: mujoco.MjModel, max_group: int = 2, cloth: C.ClothInfo | Non
             entry["mesh"] = mesh_lookup[mid]
         geoms.append(entry)
 
-    flexes = []
-    if cloth is not None:
-        fid = cloth.flex_id
-        matid = int(m.flex_matid[fid]) if fid >= 0 else int(cloth_material)
-        if matid >= 0:
-            used_mats.add(matid)
-        # Render mesh: one vertex per (sim vertex, texture coordinate) pair, so the seams
-        # between the front and back panel keep both textures (and a crisp crease).
-        pairs = {}
-        rfaces = np.zeros_like(cloth.faces)
-        for f in range(len(cloth.faces)):
-            for c in range(3):
-                key = (int(cloth.faces[f, c]), int(cloth.face_tc[f, c]))
-                rfaces[f, c] = pairs.setdefault(key, len(pairs))
-        src = np.array([v for v, _ in pairs], np.uint32)          # render vertex -> sim vertex
-        ruv = np.array([cloth.texcoord[t] for _, t in pairs])
-        rows, cols, vals, fine_faces, n_fine = C.loop_subdivision(rfaces, len(pairs), subdiv_levels)
-        cols = src[cols]                                          # weights act on sim vertices
-        uv_fine = C.linear_subdivision_uv(ruv, rfaces, subdiv_levels).astype(np.float32)
-        back = (web_textures or {}).get("denim_back")
-        flexes.append({
-            "name": cloth.name,
-            "nvert": cloth.nvert,
-            "vertoffset": 0,                # offset (in vertices) in the streamed flex block
-            "mat": matid,
-            "back_tex": tex.add_png(back) if back else -1,
-            "nfine": int(n_fine),
-            "w_rows": _b64(rows), "w_cols": _b64(cols), "w_vals": _b64(vals),
-            "faces": _b64(fine_faces), "uv": _b64(uv_fine),
-            "thickness": float(m.flex_radius[fid]) if fid >= 0 else 0.0,
-        })
-
     payload = {
         "bodies": [m.body(b).name for b in render_bodies],
         "geoms": geoms,
         "meshes": meshes,
         "materials": _materials(m, tex, used_mats),
         "textures": tex.items,
-        "flexes": flexes,
+        "flexes": [],
     }
     if not compress:
         return np.array(render_bodies, dtype=np.int64), payload

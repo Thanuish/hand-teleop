@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sereact · Candidate report</title>
+  <link rel="stylesheet" href="/test-static/brand.css" /><link rel="icon" type="image/png" href="/test-static/sereact-logo.png">
+  <link rel="stylesheet" href="/test-static/admin.css" />
+  <style>
+    .head { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; flex-wrap: wrap; margin: 6px 0 18px; }
+    .head .meta { color: var(--sr-muted); font-size: 13px; margin-top: 4px; }
+    .grid { display: grid; grid-template-columns: 1.15fr 1fr; gap: 14px; }
+    @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } }
+    .verdict { padding: 20px 22px; }
+    .verdict .pill { font-size: 15px; padding: 7px 14px; }
+    .verdict ul { margin: 14px 0 0; padding-left: 18px; } .verdict li { margin: 6px 0; color: #dfe5f5; }
+    .nums { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 16px; }
+    .nums .tile .tv { font-size: 22px; }
+    .skills { margin-top: 14px; display: grid; gap: 8px; }
+    .skill { display: grid; grid-template-columns: 96px 1fr 36px; gap: 10px; align-items: center; font-size: 13px; color: #cbd3e6; }
+    .skill .bar { width: 100%; height: 8px; } .skill .bar i { background: var(--sr-grad); }
+    .chart svg { width: 100%; height: auto; display: block; }
+    .chart .leg { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--sr-muted); margin-top: 6px; }
+    .chart .leg i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
+    dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; margin: 0; font-size: 13.5px; }
+    dl.kv dt { color: var(--sr-muted); } dl.kv dd { margin: 0; font-variant-numeric: tabular-nums; }
+    dd.bad { color: var(--sr-warn); }
+    .files a { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; }
+    section { margin-bottom: 14px; }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <span class="sr-brand"><span class="sr-logo" aria-hidden="true"></span><span class="sr-mark">sere<b>act</b></span><span class="sr-divider"></span>
+      <span class="sr-product">Candidate report</span></span>
+    <a class="btn ghost" href="/admin">← All candidates</a>
+  </header>
+  <main>
+    <div class="head">
+      <div><h1 id="name">…</h1><div class="meta" id="meta"></div></div>
+      <div class="row noprint" id="actions"></div>
+    </div>
+
+    <div class="grid">
+      <section class="card verdict">
+        <div class="row"><span class="pill" id="verdict"></span><span class="muted" id="verdictNote"></span></div>
+        <ul id="reasons"></ul>
+        <div class="nums">
+          <div class="tile"><div class="tv" id="nOverall">–</div><div class="tk">Overall score</div></div>
+          <div class="tile"><div class="tv" id="nLearning">–</div><div class="tk">Learning (50 = no change)</div></div>
+          <div class="tile"><div class="tv" id="nSpread">–</div><div class="tk">Spread between tasks</div></div>
+        </div>
+        <div class="skills" id="skills"></div>
+      </section>
+
+      <section class="card pad">
+        <h2>Session</h2>
+        <dl class="kv" id="session"></dl>
+      </section>
+    </div>
+
+    <section class="card pad chart">
+      <h2>Learning curve <span class="muted" style="font-weight:400;font-size:13px">time between successful grasps, in order through the test (lower = faster)</span></h2>
+      <div id="chart"></div>
+      <div class="leg" id="legend"></div>
+    </section>
+
+    <section class="card pad">
+      <h2>Tasks</h2>
+      <div class="tablewrap"><table id="tasks"></table></div>
+    </section>
+
+    <div class="grid">
+      <section class="card pad"><h2>Attempts</h2><div class="tablewrap"><table id="attempts"></table></div></section>
+      <section class="card pad files"><h2>Files</h2><div class="tablewrap"><table id="files"></table></div></section>
+    </div>
+  </main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const code = location.pathname.split('/').pop();
+const fmt = (s) => s == null ? '–' : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
+const size = (b) => b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : b > 1e3 ? (b / 1e3).toFixed(0) + ' kB' : b + ' B';
+const TASK_COLORS = ['#6aa6ff', '#a78bfa', '#34d399', '#fbbf24', '#f472b6', '#22d3ee'];
+
+async function load() {
+  const r = await fetch(`/admin/api/report/${code}`);
+  if (!r.ok) { $('name').textContent = 'Not found'; return; }
+  const d = await r.json(), c = d.candidate, rec = d.recommendation || {}, sc = d.scores || {}, q = d.quality || {};
+  document.title = `Sereact · ${c.name || c.email || code}`;
+  $('name').textContent = c.name || (c.email ? c.email : 'Test run');
+  $('meta').innerHTML = [c.email && esc(c.email), d.invite?.job && esc(d.invite.job),
+    d.invite ? `invited ${esc((d.invite.invited_at || '').slice(0, 16))}` : (c.email ? '<span class="warn">not on the invite list</span>' : 'test run'),
+    `attempt ${esc(code)}`].filter(Boolean).join(' · ');
+  $('actions').innerHTML = (c.email && c.status !== 'reset' ? `<button class="ghost" id="retake">Allow retake</button>` : '')
+    + `<button class="ghost" onclick="print()">Print</button>`;
+  if ($('retake')) $('retake').onclick = async () => {
+    if (!confirm('Let this candidate take the test again? This attempt stays (here and in its folder).')) return;
+    await fetch(`/admin/reset/${code}`, { method: 'POST' }); load();
+  };
+  // verdict
+  const v = rec.verdict || (c.status === 'playing' ? 'incomplete' : null);
+  $('verdict').className = `pill v-${v || 'incomplete'}`;
+  $('verdict').textContent = rec.label || (c.status === 'playing' ? 'Test in progress' : 'No result');
+  $('verdictNote').textContent = d.running ? 'running now' : '';
+  $('reasons').innerHTML = (rec.reasons || []).map(x => `<li>${esc(x)}</li>`).join('');
+  $('nOverall').innerHTML = sc.overall == null ? '–' : `${sc.overall} <span class="grade g${esc(sc.grade)}">${esc(sc.grade)}</span>`;
+  $('nLearning').textContent = rec.learning?.score ?? '–';
+  $('nSpread').textContent = rec.consistency ?? '–';
+  const sk = sc.skills || {};
+  $('skills').innerHTML = ['completion', 'speed', 'precision', 'economy'].filter(k => sk[k] != null).map(k =>
+    `<div class="skill"><span>${k[0].toUpperCase() + k.slice(1)}</span><div class="bar"><i style="width:${sk[k]}%"></i></div><b>${Math.round(sk[k])}</b></div>`).join('');
+  // session
+  const S = [
+    ['Started', c.started], ['Finished', c.finished || d.results_at], ['Status', c.status],
+    ['Setup took', q.setup_s != null ? fmt(q.setup_s) : null],
+    ['Hand tracking', q.fps != null ? `${q.fps} pictures/s` : null, q.fps != null && q.fps < d.thresholds.retest_fps],
+    ['Tracking delay', q.latency_ms != null ? `${q.latency_ms} ms` : null, q.latency_ms > d.thresholds.retest_latency_ms],
+    ['Hand lost while driving', q.lost != null ? `${Math.round(100 * q.lost)} %` : null, q.lost > d.thresholds.retest_lost],
+    ['Tracked on the server', q.server ? `${Math.round(100 * q.server)} % of the time` : (q.fps != null ? 'no' : null)],
+    ['Tracker device', q.device], ['Total time with the camera', q.duration_s != null ? fmt(q.duration_s) : null],
+  ];
+  $('session').innerHTML = S.filter(s => s[1] != null && s[1] !== '').map(([k, v, bad]) => `<dt>${k}</dt><dd class="${bad ? 'bad' : ''}">${esc(v)}${bad ? ' ⚠' : ''}</dd>`).join('')
+    || '<dt>–</dt><dd class="muted">no tracking log</dd>';
+  chart(rec.curve || [], rec.learning?.tasks || {});
+  // tasks
+  $('tasks').innerHTML = `<tr><th>Task</th><th class="num">Score</th><th class="num">Time</th><th class="num">Steps</th>
+      <th class="num">Grasps / tries</th><th class="num">Drops</th><th class="num">Path</th><th>Ended</th></tr>`
+    + (d.tasks || []).map(t => `<tr><td>${esc(t.title)}${t.scored ? '' : ' <span class="tag">practice</span>'}</td>
+      <td class="num">${t.score ?? ''}</td><td class="num">${fmt(t.time_s)} <span class="muted">/ ${fmt(t.limit)}</span></td>
+      <td class="num">${esc(t.steps)}</td><td class="num">${t.grasps ?? ''} / ${t.attempts ?? ''}</td><td class="num">${t.drops ?? ''}</td>
+      <td class="num">${t.path_m} m</td>
+      <td>${t.ended_by === 'skip' ? '<span class="tag warn">skipped</span>' : t.ended_by === 'finish' ? '<span class="tag">finished early</span>' : t.completed ? 'done' : 'time up'}</td></tr>`).join('');
+  // attempts
+  $('attempts').innerHTML = `<tr><th>Attempt</th><th>Status</th><th>Started</th><th class="num">Score</th></tr>`
+    + (d.attempts.length ? d.attempts : [{ code, status: c.status, started: c.started, overall: sc.overall }]).map(a =>
+      `<tr><td>${a.code === code ? `<b>${esc(a.code)}</b>` : `<a href="/admin/report/${esc(a.code)}">${esc(a.code)}</a>`}</td>
+       <td>${esc(a.status)}</td><td class="date">${esc((a.started || '').slice(0, 16))}</td><td class="num">${a.overall ?? ''}</td></tr>`).join('');
+  // files
+  $('files').innerHTML = (d.files || []).map(f => `<tr><td><a href="/admin/file/${esc(code)}/${encodeURI(f.path)}">${esc(f.path)}</a></td>
+      <td class="num muted">${size(f.size)}</td></tr>`).join('') || '<tr><td class="muted">no files yet</td></tr>';
+}
+
+/** the learning curve: each grasp's time since the previous one, in order through the test;
+ *  per task its first-half and second-half medians as a line (the trend recommend.py measures) */
+function chart(pts, perTask) {
+  if (!pts.length) { $('chart').innerHTML = '<p class="muted">No grasps recorded.</p>'; $('legend').innerHTML = ''; return; }
+  const W = 900, H = 260, L = 46, R = 14, T = 14, B = 34;
+  const ymax = Math.min(Math.max(...pts.map(p => p.cycle)) * 1.08, 120) || 10;
+  const x = (i) => L + (pts.length === 1 ? 0.5 : i / (pts.length - 1)) * (W - L - R);
+  const y = (v) => T + (1 - Math.min(v, ymax) / ymax) * (H - T - B);
+  const tasks = [...new Set(pts.map(p => p.task))];
+  const col = Object.fromEntries(tasks.map((k, i) => [k, TASK_COLORS[i % TASK_COLORS.length]]));
+  let g = '';
+  for (let k = 0; k <= 4; k++) {                                  // (grid)
+    const v = ymax * k / 4;
+    g += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="rgba(160,180,255,.12)"/>`
+       + `<text x="${L - 8}" y="${y(v) + 4}" text-anchor="end" font-size="11" fill="#7d8aa8">${Math.round(v)} s</text>`;
+  }
+  for (const k of tasks) {                                       // (task bands and trend lines)
+    const idx = pts.map((p, i) => p.task === k ? i : -1).filter(i => i >= 0);
+    const a = idx[0], b = idx[idx.length - 1];
+    g += `<text x="${(x(a) + x(b)) / 2}" y="${H - 10}" text-anchor="middle" font-size="11" fill="${col[k]}">${esc(pts[a].title.replace(/^Task \d+: /, ''))}</text>`;
+    const t = perTask[k];
+    if (t && idx.length >= 3) {
+      const h = Math.floor(idx.length / 2);
+      g += `<line x1="${x(idx[0])}" y1="${y(t.early_cycle)}" x2="${x(idx[h - 1] ?? idx[0])}" y2="${y(t.early_cycle)}" stroke="${col[k]}" stroke-width="2" stroke-dasharray="5 4" opacity=".7"/>`
+         + `<line x1="${x(idx[h])}" y1="${y(t.late_cycle)}" x2="${x(b)}" y2="${y(t.late_cycle)}" stroke="${col[k]}" stroke-width="2" stroke-dasharray="5 4" opacity=".7"/>`;
+    }
+  }
+  g += `<polyline fill="none" stroke="rgba(200,210,240,.25)" stroke-width="1.5" points="${pts.map((p, i) => `${x(i)},${y(p.cycle)}`).join(' ')}"/>`;
+  g += pts.map((p, i) => `<circle cx="${x(i)}" cy="${y(p.cycle)}" r="4.5" fill="${col[p.task]}"><title>${esc(p.title)} · grasp ${p.i}: ${p.cycle} s`
+    + `${p.attempts ? ` · ${p.attempts} tr${p.attempts > 1 ? 'ies' : 'y'}` : ''}</title></circle>`).join('');
+  $('chart').innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Learning curve">${g}</svg>`;
+  $('legend').innerHTML = tasks.map(k => {
+    const t = perTask[k];
+    const n = pts.filter(p => p.task === k).length;
+    const trend = t ? ` · ${t.improvement >= 0 ? 'faster' : 'slower'} by ${Math.abs(Math.round(100 * t.improvement))} % (median ${t.early_cycle} s → ${t.late_cycle} s)`
+      : n >= 3 ? ' · not used for learning (gets harder as it goes)' : ' · too few grasps for a trend';
+    return `<span><i style="background:${col[k]}"></i>${esc(pts.find(p => p.task === k).title)}${trend}</span>`;
+  }).join('') + '<span class="muted">dashed: median of the first and second half of each task</span>';
+}
+load();
+</script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+# https in front of the screening test (docker-compose.yml). The certificate comes from Let's
+# Encrypt by itself once the address points at this server. Websockets pass through with no idle
+# cut-off, and X-Forwarded-For / -Proto are passed on (the test needs them to tell a candidate's
+# request from a local one).
+{$SITE} {
+	encode gzip
+	reverse_proxy teleop:8000 {
+		# a reload of Caddy keeps running tests' websockets open this long (a test takes ~20 min)
+		stream_close_delay 30m
+	}
+}

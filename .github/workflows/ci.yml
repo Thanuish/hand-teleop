@@ -74,6 +74,10 @@ jobs:
           echo "== restarted: the candidate is still there (the volume)"
           docker rm -f teleop >/dev/null; run; up; echo
           curl -fs -u admin:ci-secret localhost:8000/admin/api | grep -q 'ci@example.com'
+          echo "== the compose file and the https front are valid"
+          SITE=test.example.com ADMIN_PASSWORD=x docker compose config -q
+          docker run --rm -e SITE=test.example.com -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.8 \
+            caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
           echo "all good"; docker images hand-teleop:ci --format 'image size: {{.Size}}'
       - if: failure()
         run: docker logs teleop || true

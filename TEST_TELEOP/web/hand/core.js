@@ -79,10 +79,10 @@ export const SETTINGS = {
   pinchOn: 0.38, pinchOff: 0.5,
   pinchFrames: 3,              // gripMode 'pinchToggle': a pinch counts once seen this many frames in a row
   // One Euro filter (adaptive: steady when the hand is still, little lag when it moves)
-  // (2026-11: both opened up, with depthMedian 5 -> 3: on a real 15 fps session the robot lagged
-  // the hand by 0.33 s and felt sluggish; now 0.22 s, over all recordings 0.17 -> 0.14 s, a still
-  // hand's wander 3.3 -> 2.4 mm, roughness while moving +3 %. The dead band holds a still hand; opened a little more once the
-  // grasp roll-back was gone, see grasp below: the lag over all recordings 0.14 -> 0.135 s)
+  // (2026-11: both opened up: the robot lagged the hand by 0.17 s over all recordings and felt
+  // sluggish; now 0.14 s, with the grasp roll-back gone (see grasp below) and the roughness while
+  // moving down too. The dead band holds a still hand. depthMedian stays 5: at 3, two wrong frames
+  // in a row won the median and the robot lurched 12 mm)
   pos: { minCutoff: 1.5, beta: 10, dCutoff: 1.0 },    // position [m]
   // distance from the camera (the noisiest) [m]. A calm speed estimate (dCutoff 0.5): with a fast
   // one the depth noise itself opened the filter up
@@ -110,7 +110,7 @@ export const SETTINGS = {
   // [s] the position output this far ahead along the hand's speed (makes up for the filters' lag).
   // Off: on real sessions it amplified the tracking noise (a third of the roughness while moving)
   lead: 0,
-  depthMedian: 3,              // [frames] the distance: the median of this many (a wrong frame or two ignored)
+  depthMedian: 5,              // [frames] the distance: the median of this many (a wrong frame or two ignored)
   depthSpeed: 0.8,             // [m/s] ... and changing at most this fast (a hand toward / away from the camera)
   // the distance: this share from the hand's size in the picture (handPose), the rest from the 3D
   // palm solution. Far from the camera (a small hand) the palm solution trades distance for tilt,

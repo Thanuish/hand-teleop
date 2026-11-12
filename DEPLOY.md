@@ -32,7 +32,27 @@ echo <token> | docker login ghcr.io -u <github-user> --password-stdin
 docker pull ghcr.io/thanuish/hand-teleop:v1.0.1-cpu
 ```
 
-## Run
+## Run: one server, one address (the simplest)
+
+On a server with Docker, at an address on Sereact's domain (e.g. `assessment.sereact.ai`):
+
+1. In DNS, point the address at the server's IP. Open ports 80 and 443.
+2. Copy `docker-compose.yml` and `Caddyfile` from the repository to the server, and next to them a
+   file `.env`:
+   ```
+   SITE=assessment.sereact.ai
+   ADMIN_PASSWORD=<a long random password>
+   VERSION=v1.0.2
+   MAX_CONCURRENT=15
+   ```
+3. Sign in to the registry once (see above), then `docker compose up -d`.
+
+Caddy gets the https certificate by itself and passes the websockets on, so nothing below
+("The load balancer") needs doing by hand. Candidates open `https://assessment.sereact.ai`, the
+admin page is `https://assessment.sereact.ai/admin`. To update: change `VERSION` in `.env`, then
+`docker compose pull && docker compose up -d` (after draining, see "Updating").
+
+## Run: the container alone (behind a load balancer you already have)
 
 ```bash
 docker run -d --name teleop --restart unless-stopped \
@@ -74,7 +94,11 @@ Mount a persistent volume there and **back it up** (daily, and before each updat
 
 ## Size
 
-About **1 CPU core and 300–500 MB of RAM per candidate testing at the same time**, plus 2 cores for the rest. For 10–30 at once: 16–32 vCPU, 16 GB RAM. Disk: a few MB per candidate (recordings).
+About **1 CPU core and 1 GB of RAM per candidate testing at the same time**, plus 2 cores and
+2 GB for the rest (a simulator measured 0.8 GB, up to 1.8 GB while it starts). For 10 at once:
+8–12 vCPU, 16 GB; for 30: 32 vCPU, 32 GB. Set `MAX_CONCURRENT` to what the machine holds: a
+candidate over it is asked to wait instead of the test failing. Disk: about 10 MB per minute of a
+test (recordings). Pick a region near the candidates (e.g. Frankfurt): the distance adds to the lag.
 
 ## Updating
 

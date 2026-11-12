@@ -3,12 +3,12 @@
 Every server run is one *session*. Layout:
 
     data/
-      jeans/                                   one folder per task
+      screen/                                  one folder per task
         index.csv                              one row per saved episode (all sessions)
         2026-09-28_14-05-12/                   one folder per session (server run)
           session.json                         who / when / settings of this session
           episode_0000.hdf5                    the demonstration (see recorder.py)
-          episode_0000.json                    summary: success, duration, fold coverage, ...
+          episode_0000.json                    summary: success, duration, ...
           episode_0000.mp4                     first-person video: what the operator saw in the
                                                headset (rendered in the background)
 
@@ -28,7 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 INDEX_FIELDS = ["session", "episode", "path", "saved_at", "operator", "task", "success",
-                "duration_s", "frames", "final_coverage", "final_height_m", "notes"]
+                "duration_s", "frames", "notes"]
 
 
 class Session:

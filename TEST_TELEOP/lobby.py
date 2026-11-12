@@ -1,15 +1,15 @@
 ﻿"""The screening lobby: the one web server candidates connect to (through a tunnel such as
 Cloudflare Tunnel for remote candidates). One public link: a candidate enters name + email and
 agrees to the recording, once per email. It runs one simulator per candidate
-(TEST_TELEOP.worker --task screen, on a local port), relays the candidate's monitor page and
-phone to it, and shows the results to you.
+(TEST_TELEOP.worker --task screen, on a local port), relays the candidate's monitor page (and
+a phone used as the camera) to it, and shows the results to you.
 
     python -m TEST_TELEOP.lobby serve --tunnel             # start (or: start_screening.bat)
 
 Candidate:  /                 name + email, consent (one attempt per email; a cookie lets the
                               same browser come back to a test in progress)
-            /play/<code>      the monitor page: the robot, the instructions, a QR code
-            /m/<code>         the phone controller (Chrome on Android, WebXR motion tracking)
+            /play/<code>      the test page: the robot, the instructions, the hand control
+            /h/<code>         a phone as the hand camera (QR code on the test page)
 You:        /admin            results, ranking, pass / fail, allow a retake (this PC only)
             /t/<token>        a test run of your own (link on the admin page)
 
@@ -715,12 +715,6 @@ def make_app(args) -> web.Application:
         await ensure_worker(code, c)
         return static_page("screen.html", code)
 
-    async def phone(request):
-        code, c = lookup(request.match_info["code"])
-        if c is None or c["status"] != "playing":
-            return page("Sereact · Teleoperation test", "<h1>Link not active</h1><p>Open the test on your computer first.</p>")
-        return static_page("phone.html", code)
-
     async def hand_camera(request):
         """A phone as the hand camera (any phone: only its camera and browser are needed)."""
         code, c = lookup(request.match_info["code"])
@@ -737,20 +731,6 @@ def make_app(args) -> web.Application:
         segno.make(f"{public_base(request)}/h/{code}", error="m").save(buf, kind="svg", scale=8, border=2,
                                                                         dark="#000", light="#fff")
         return web.Response(body=buf.getvalue(), content_type="image/svg+xml")
-
-    async def qr(request):
-        import segno
-        code, c = lookup(request.match_info["code"])
-        if c is None:
-            raise web.HTTPNotFound()
-        buf = io.BytesIO()
-        segno.make(f"{public_base(request)}/m/{code}", error="m").save(buf, kind="svg", scale=8, border=2,
-                                                                        dark="#000", light="#fff")
-        return web.Response(body=buf.getvalue(), content_type="image/svg+xml")
-
-    async def phone_url(request):
-        code, _ = lookup(request.match_info["code"])
-        return web.json_response({"url": f"{public_base(request)}/m/{code}"})
 
     # ---- relay to the candidate's simulator
     async def scene_json(request):
@@ -985,11 +965,8 @@ def make_app(args) -> web.Application:
     app.router.add_post("/join", join)
     app.router.add_get("/play/{code}", play)
     app.router.add_get("/t/{token}", test_run)
-    app.router.add_get("/m/{code}", phone)
-    app.router.add_get("/qr/{code}.svg", qr)
     app.router.add_get("/h/{code}", hand_camera)
     app.router.add_get("/qrh/{code}.svg", qr_hand)
-    app.router.add_get("/phone-url/{code}", phone_url)
     app.router.add_get("/s/{code}/scene.json", scene_json)
     app.router.add_get("/s/{code}/ws", ws_relay)
     # hand tracking on the server for a computer too slow to do it (tracker.py: a process per user)

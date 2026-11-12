@@ -50,7 +50,7 @@ class ArmTeleop:
     def __init__(self, pos_scale: float = 1.0, z_min: float | None = None):
         self.pos_scale = pos_scale
         self.rot_scale = 1.0    # the gripper turns this much of the controller's turn (0.5: half as far)
-        # lowest allowed EE target height (task dependent: cloth needs the fingertips on the table)
+        # lowest allowed EE target height (task dependent)
         self.ws_lo = WORKSPACE_LO.copy()
         if z_min is not None:
             self.ws_lo[2] = z_min

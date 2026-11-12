@@ -1,5 +1,5 @@
 """The two teleoperated UR5e arms: controller input -> clutch mapping -> differential IK ->
-joint and gripper commands. Knows nothing about cloth, recording or the network."""
+joint and gripper commands. Knows nothing about the task, recording or the network."""
 from __future__ import annotations
 
 import mujoco

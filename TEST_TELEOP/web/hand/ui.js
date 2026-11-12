@@ -1,6 +1,6 @@
 // What the hand-control pages show: the camera image (mirrored, like a mirror) with the hand's
 // skeleton, coloured by what the hand does, and the short start checklist.
-import { BONES } from './core.js';
+import { BONES, SETTINGS } from './core.js';
 
 export const COLORS = { open: '#3ee08f', fist: '#ffc24a', pinch: '#ff5f6d', none: '#9aa3b2' };
 export const LABELS = { open: 'DRIVING', fist: 'PAUSED', pinch: 'GRIPPING', none: 'NO HAND' };
@@ -50,10 +50,23 @@ export function drawHand(canvas, video, state, { mirror = true, dim = 0.25 } = {
           ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(x, y); ctx.stroke();
         });
       }
-      if (state.gesture === 'pinch') {                      // a ring at the pinch
+      // the pinch circle, between the thumb and index tips: a small target ring and a ring that
+      // shrinks onto it as the fingers close; it fills when the pinch counts
+      if (state.pinch != null && state.gesture !== 'fist') {
         const [x1, y1] = map(lm[4]), [x2, y2] = map(lm[8]);
-        ctx.strokeStyle = COLORS.pinch; ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.arc((x1 + x2) / 2, (y1 + y2) / 2, w / 28, 0, 7); ctx.stroke();
+        const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2, r0 = w / 30;
+        const k = Math.min(1, Math.max(0, (0.9 - state.pinch) / (0.9 - SETTINGS.pinchOn)));   // 0 apart .. 1 counts
+        if (state.gesture === 'pinch') {
+          ctx.fillStyle = COLORS.pinch; ctx.globalAlpha = 0.85;
+          ctx.beginPath(); ctx.arc(cx, cy, r0, 0, 7); ctx.fill(); ctx.globalAlpha = 1;
+        } else if (k > 0) {
+          ctx.globalAlpha = 0.35 + 0.65 * k;
+          ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.setLineDash([4, 4]);
+          ctx.beginPath(); ctx.arc(cx, cy, r0, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+          ctx.strokeStyle = COLORS.pinch; ctx.lineWidth = 3;
+          ctx.beginPath(); ctx.arc(cx, cy, r0 * (1 + 2.5 * (1 - k)), 0, 7); ctx.stroke();
+          ctx.globalAlpha = 1;
+        }
       }
     }
   } else {
@@ -63,8 +76,8 @@ export function drawHand(canvas, video, state, { mirror = true, dim = 0.25 } = {
 }
 
 // the checklist's grip steps for gripMode 'pinchToggle' (pass as gripText, openText)
-export const GRIP_TEXT = 'Open it, then pinch 🤏 thumb and index finger once: the gripper <b>closes</b>';
-export const OPEN_TEXT = 'Pinch 🤏 again: it <b>opens</b>. Then open your hand ✋: now it <b>drives</b> the robot';
+export const GRIP_TEXT = 'Pinch 🤏 thumb and index: the gripper <b>closes</b>. Shrink the ring onto the circle';
+export const OPEN_TEXT = 'Pinch 🤏 again: it <b>opens</b>. Open hand ✋ <b>drives</b>';
 
 /** The start checklist: each step ticks off when done, in order; then onDone(). The default
  *  steps: camera on, hand seen, a fist (that pauses), a pinch (that grips), open the hand (go).
@@ -169,10 +182,10 @@ export function clutchDemo() {
     <text x="20" y="133" class="d-lbl">THE ROBOT</text>
     <rect x="20" y="168" width="320" height="6" rx="3" class="d-table"/>
     <g transform="translate(100 148)"><g class="d-grip">${grip}</g></g>
-    <text x="180" y="204" class="d-cap d-c1">1 · Open hand: the robot follows</text>
-    <text x="180" y="204" class="d-cap d-c2">2 · Out of room? Make a fist: it pauses</text>
-    <text x="180" y="204" class="d-cap d-c3">3 · Move the fist back: the robot stays</text>
-    <text x="180" y="204" class="d-cap d-c4">4 · Open again: it carries on from there</text>
+    <text x="180" y="204" class="d-cap d-c1">1 · Open hand: it follows</text>
+    <text x="180" y="204" class="d-cap d-c2">2 · Out of room? Fist: it pauses</text>
+    <text x="180" y="204" class="d-cap d-c3">3 · Move back: the robot stays</text>
+    <text x="180" y="204" class="d-cap d-c4">4 · Open: carry on</text>
   </g>
 </svg></div>`;
 }

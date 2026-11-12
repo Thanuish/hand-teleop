@@ -7,8 +7,8 @@ Each scored task gets four sub-scores, 0..1, weighted by [scoring] in config/scr
                 the target height; rounds: items done / the target; buzz wire: how far along
     speed       only for a task that was completed: 1 at or under its par time (the time a
                 capable operator takes: [[phases]] par_time_s), falling linearly to 0 at the time
-                limit. In tasks that run until time is up (rounds, tower) the amount done
-                already measures the pace: speed = completion there
+                limit. In tasks that run until time is up (rounds) the amount done already
+                measures the pace: speed = completion there
     precision   grasps that lifted something / grasp attempts, times a penalty factor per
                 mistake: drops (1 / drops_to_zero each), objects put in the wrong bin
                 (wrong_bin_penalty each), tower falls (1 / falls_to_zero each); buzz wire:
@@ -46,7 +46,7 @@ def completion(m: dict) -> float:
 
 
 def speed(m: dict, limit: float, par: float, done: float) -> float:
-    if "best_height" in m or "rounds" in m:                  # (as much as possible until time is up)
+    if "rounds" in m:                                        # (as much as possible until time is up)
         return done
     if not m["completed"]:
         return 0.0

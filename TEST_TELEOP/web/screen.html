@@ -281,7 +281,7 @@
       <div class="startHead">
         <div>
           <span class="sr-brand"><span class="sr-logo" aria-hidden="true"></span><span class="sr-mark">sere<b>act</b></span><span class="sr-divider"></span><span class="sr-product">Teleoperation assessment</span></span>
-          <h1>Set up your hand control</h1><p>Your hand drives the robot. No app, no headset: just your camera.</p>
+          <h1>Set up your hand control</h1><p>Your hand drives the robot.</p>
         </div>
         <span class="sr-tag">Setup · about 2 min</span>
       </div>
@@ -289,8 +289,8 @@
         <div class="cam">
           <canvas id="startCam" width="640" height="480"></canvas>
           <span class="chip" id="startChip" style="color:#9aa3b2"><i></i><b>CAMERA OFF</b></span>
-          <div id="camOverlay"><div>Sit about an arm's length from the screen.<br>Press <b>Start the camera</b> and allow it.<br>
-            <span style="color:#7d8596;font-size:13px">The video stays on this computer: only your hand's position is sent.</span></div></div>
+          <div id="camOverlay"><div>Sit an arm's length from the screen.<br>Press <b>Start the camera</b>.<br>
+            <span style="color:#7d8596;font-size:13px">Only used to track your hand. No video is stored.</span></div></div>
         </div>
         <div>
           <ol id="checklist"></ol>
@@ -298,21 +298,17 @@
           <div id="slowBox" class="hidden">
             <button class="btn" id="serverBtn">Track on our server</button>
             <button class="btn ghost" id="slowBtn">Continue anyway</button>
-            <p>Tracking on our server: your camera pictures are sent to the test's server, used only to find your hand, and
-              never stored. It needs a steady internet connection.</p>
           </div>
           <div id="readyBox" class="hidden">
-            <p><b>You're all set.</b> First a practice round (not scored), then the tasks. Each task starts with a
-              short explanation and a countdown. Keep your hand inside the box: outside it the robot pauses.</p>
+            <p><b>All set.</b> Practice first (not scored), then two games. Keep your hand in the box.</p>
             <button class="btn" id="goBtn">Start the practice</button>
           </div>
           <div id="trackerState">Loading the hand tracker…</div>
           <div id="robotState">Connecting to the robot…</div>
           <div class="legend"><span>✋ open: move the robot</span><span>✊ fist: pause</span><span>🤏 pinch: grip / let go</span>
-            <span><b>Q E</b>: turn the gripper</span><span><b>W S A D</b>: tilt it (tasks that need it)</span><span><b>H</b>: back home</span></div>
-          <div class="help">Trouble with the camera or the tracking? <a href="/help" target="_blank" rel="noopener">Read the help page</a>.</div>
-          <div id="phoneCam">No webcam? Use <b>any phone</b> as the camera: lay it flat on the desk, screen up, and
-            <a href="#" id="phoneCamBtn" style="color:#9bd8ff">show its QR code</a>.
+            <span><b>Q E</b>: turn the gripper</span><span><b>H</b>: back home</span></div>
+          <div class="help">Trouble? <a href="/help" target="_blank" rel="noopener">Help</a></div>
+          <div id="phoneCam">No webcam? <a href="#" id="phoneCamBtn" style="color:#9bd8ff">Use your phone</a> (flat on the desk, screen up).
             <img id="phoneCamQr" class="hidden" alt="QR code for the phone camera" src="/qrh/__CODE__.svg"></div>
         </div>
       </div>
@@ -322,14 +318,14 @@
   <div id="handBox" class="hidden">
     <canvas id="handPreview" width="640" height="480"></canvas>
     <div class="row"><span class="chip" id="handChip" style="color:#9aa3b2"><i></i><b>NO HAND</b></span><span id="handStats"></span></div>
-    <div class="keys">✋ move · ✊ pause · 🤏 grip / let go · <b>Q E</b> turn · <b>W S A D</b> tilt · <b>H</b> home · <b>C</b> bigger camera</div>
+    <div class="keys">✋ move · ✊ pause · 🤏 grip / let go · <b>Q E</b> turn · <b>H</b> home · <b>C</b> bigger camera</div>
   </div>
   <div id="boxWarn" class="hidden"></div>
   <div id="taskBar" class="hidden">
-    <button class="btn ghost" id="infoBtn" title="Read this task's description again (the clock keeps running)">ⓘ Task info</button>
-    <button class="btn ghost" id="homeBtn" title="The gripper back to its start position (H)">🏠 Home <span class="k">H</span></button>
-    <button class="btn ghost" id="skipBtn" title="Too hard? Move on to the next task (what you have done so far counts)">Skip task</button>
-    <button class="btn" id="finishBtn" title="Done enough? End this task now (what you have done so far counts)">Finish task</button>
+    <button class="btn ghost" id="infoBtn" title="The task again (the clock keeps running)">ⓘ Task info</button>
+    <button class="btn ghost" id="homeBtn" title="Gripper back to start (H)">🏠 Home <span class="k">H</span></button>
+    <button class="btn ghost" id="skipBtn" title="Move on (what you did counts)">Skip task</button>
+    <button class="btn" id="finishBtn" title="End this task now (what you did counts)">Finish task</button>
   </div>
   <div id="confirmBox" class="hidden"><div class="card">
     <h2 id="confirmTitle"></h2>
@@ -354,7 +350,7 @@
   <div id="done" class="hidden"><div class="card">
     <span class="sr-brand"><span class="sr-logo" aria-hidden="true"></span><span class="sr-mark">sere<b>act</b></span></span>
     <h1>Thank you!</h1>
-    <p>You have finished the test. Your results have been saved.<br>You can close this page now.</p>
+    <p>Your results are saved. You can close this page.</p>
   </div></div>
 
   <div id="loading">Loading the robot…</div>

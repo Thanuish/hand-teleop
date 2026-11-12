@@ -29,7 +29,7 @@ base = [0.0, -0.36]            # where its base stands, on the back edge of the 
 # gripper pointing down, 20 cm above the table
 home_deg = [0.7448, -92.3608, 111.956, -109.5495, -90.0002, 0.7448]
 min_height = 0.02              # the gripper's pinch point never goes lower than this above the table
-max_speed = 0.4                # [m/s] top speed of the gripper (a real UR5e can do 1.0); faster hand motion is capped
+max_speed = 0.6                # [m/s] top speed of the gripper (a real UR5e can do 1.0); faster hand motion is capped
 max_turn_deg = 90              # [deg/s] its top turning speed
 servo_stiffness = 1.0          # x the UR5e's own joint motor stiffness (higher = follows faster; 3 was shaky)
 ik = "qp"                      # "qp": joint limits and speeds kept exactly, the arm never pushes into the table; "dls": the old IK
@@ -40,14 +40,14 @@ mount = "floating"             # "floating": the gripper on its own, no arm (it 
 motion_scale = 1.0             # the robot moves this many cm per cm the phone moves
 hand_smoothing_s = 0.03        # the same for a hand tracked by a camera (critically damped: glides through its ~30 updates a second)
 hand_rotation_scale = 0.5      # ... and turns this much of the hand's turn (0.5: a 40 deg turn of the hand turns the gripper 20 deg)
-hand_motion_scale = 0.35       # a camera-tracked hand: the robot moves this many cm per cm of hand (slower = more precise, calmer)
+hand_motion_scale = 0.9        # a camera-tracked hand: the robot moves this many cm per cm of hand (0.35-0.6 needed big arm movements)
 smoothing_s = 0.12             # smooths the phone's motion (it sends ~30 positions a second); higher =
                                # smoother but the arm follows a little later. 0 = off
 
 # ---------------------------------------------------------------------------- what the candidate sees
 [view]                         # the monitor's starting camera (the candidate can turn and zoom it)
-eye = [-0.25, -0.05, 1.65]     # camera position [x, y, height above the floor]: above the robot's "head", so it sees into the cup
-look_at = [0.50, -0.10, 0.75]  # the point it looks at [x, y, height above the floor] (the table is 0.75 high)
+eye = [-0.25, -0.18, 1.65]     # camera position [x, y, height above the floor]: above the robot's "head", so it sees into the cup
+look_at = [0.50, -0.20, 0.75]  # the point it looks at [x, y, height above the floor] (the table is 0.75 high)
 fov_deg = 55                   # field of view (up-down)
 arm_opacity = 0.25             # the shoulder, upper arm and forearm are drawn see-through (1 = solid) so they don't hide the work
 table_grid = 0.10              # faint lines on the table every this many metres (0 = none): distances and heights are easier to judge
@@ -112,8 +112,8 @@ economy = 10                   # economy of motion: the robot's path against the
 drops_to_zero = 3              # each drop takes this share (1/3) off precision
 falls_to_zero = 3              # the same for each fall of the tower
 wrong_bin_penalty = 0.25       # each object put in a wrong bin takes this much off precision
-pass_mark = 50
-must_complete = []
+pass_mark = 0                  # pass = both games completed (must_complete); the score ranks those who did
+must_complete = ["sort", "tower"]
 grades = { A = 85, B = 70, C = 55, D = 40 }   # the lowest overall score for each letter; below D: F
 
 [recommendation]               # the verdict on the admin page (TEST_TELEOP/recommend.py); tune once real candidates are in
@@ -180,7 +180,7 @@ roughness = 0.6
 shape = "box"
 size = [0.04, 0.04, 0.04]
 color = [0.95, 0.85, 0.2]
-start = [0.42, 0.02]
+start = [0.42, -0.27]
 mass = 0.08
 friction = [1.2, 0.01, 0.001]
 
@@ -217,15 +217,16 @@ friction = [1.2, 0.01, 0.001]
 shape = "sphere"
 diameter = 0.05
 color = [0.85, 0.15, 0.15]
-start = [0.42, -0.16]
+start = [0.42, -0.32]
 mass = 0.08
-friction = [1.2, 0.01, 0.002]  # some rolling friction: it doesn't roll away forever
+# rolling friction 0.01 m (was 0.002): a knocked ball stops within a few cm instead of rolling off
+friction = [1.2, 0.02, 0.01]
 
 [objects.blue_cube]
 shape = "box"
 size = [0.044, 0.044, 0.044]
 color = [0.15, 0.35, 0.9]
-start = [0.40, 0.14]
+start = [0.41, -0.09]
 yaw_deg = 28.6479
 mass = 0.08
 friction = [1.2, 0.01, 0.001]
@@ -235,9 +236,11 @@ shape = "cylinder"
 diameter = 0.04
 height = 0.06
 color = [0.2, 0.7, 0.3]
-start = [0.43, -0.01]
+start = [0.43, -0.20]
 mass = 0.08
-friction = [1.2, 0.01, 0.001]
+# condim 6 (the default for a cylinder is 4: no rolling friction at all, knocked over it rolled away)
+condim = 6
+friction = [1.2, 0.02, 0.01]
 
 # task 3, tilt and pour (all six degrees of freedom)
 [objects.book]                 # a hardback (12 x 15 x 2.5 cm), standing in its holder
@@ -309,10 +312,10 @@ friction = [1.2, 0.02, 0.001]
 # blocks for the tower: they appear one at a time on the supply zone (start = the supply's pos)
 [objects.tower_block]
 shape = "box"
-count = 6
+count = 3
 size = [0.05, 0.05, 0.05]
-colors = ["#e63946", "#f4a261", "#e9c46a", "#2a9d8f", "#457b9d", "#9b5de5"]
-start = [0.42, -0.30]
+colors = ["#e63946", "#e9c46a", "#457b9d"]
+start = [0.42, -0.31]
 mass = 0.06
 friction = [1.0, 0.01, 0.001]  # wood on wood
 
@@ -330,7 +333,7 @@ friction = [1.0, 0.01, 0.001]  # wood on wood
 
 [markers.zone]                 # practice: the green square
 kind = "zone"
-pos = [0.58, 0.02]
+pos = [0.58, -0.16]
 size = [0.09, 0.09]
 line = 0.01
 color = [0.15, 0.8, 0.35]
@@ -361,7 +364,7 @@ color = [0.25, 0.25, 0.28]
 
 [markers.bin_red]
 kind = "bin"
-pos = [0.62, 0.15]
+pos = [0.60, -0.07]
 inner_size = 0.11
 wall_height = 0.04
 wall = 0.005
@@ -369,7 +372,7 @@ color = [0.85, 0.15, 0.15]
 
 [markers.bin_blue]
 kind = "bin"
-pos = [0.62, -0.005]
+pos = [0.60, -0.20]
 inner_size = 0.11
 wall_height = 0.04
 wall = 0.005
@@ -377,7 +380,7 @@ color = [0.15, 0.35, 0.9]
 
 [markers.bin_green]
 kind = "bin"
-pos = [0.62, -0.16]
+pos = [0.60, -0.33]
 inner_size = 0.11
 wall_height = 0.04
 wall = 0.005
@@ -469,7 +472,7 @@ color = [0.14, 0.7, 0.3]
 # ---- tower: where the blocks appear, and the platform to build on
 [markers.tower_supply]
 kind = "zone"
-pos = [0.42, -0.30]
+pos = [0.42, -0.31]
 size = [0.08, 0.08]
 line = 0.008
 color = [0.95, 0.75, 0.15]
@@ -477,7 +480,7 @@ color = [0.95, 0.75, 0.15]
 #   kind = "platform"  a fixed block to build on (size = [x, y, height]); material
 [markers.tower_platform]
 kind = "platform"
-pos = [0.58, 0.02]
+pos = [0.58, -0.13]
 size = [0.14, 0.14, 0.03]
 material = "wood"
 
@@ -541,14 +544,14 @@ handle_length = 0.12
 key = "pair"
 kind = "pair"
 title = "Hand control"
-text = "Start the camera and follow the steps: your open hand drives the robot, a fist pauses it, a pinch closes the gripper and the next pinch opens it."
+text = "Open hand drives, fist pauses, pinch grips and pinch again lets go."
 
 [[phases]]
 key = "pick"
 title = "Practice: pick and place"
 scored = false
 time_limit_s = 180
-text = "Bring the open gripper down around the yellow cube (the ring under the gripper turns green when it is low enough), pinch to grip, lift it, put it into the green square and pinch again to let go. Q and E turn the gripper."
+text = "Put the yellow cube in the green square. Lower the gripper until its ring turns green, pinch, lift, move, pinch to let go."
 objects = ["tut_cube"]
 markers = ["zone"]
 steps = [
@@ -556,28 +559,12 @@ steps = [
 ]
 
 [[phases]]
-key = "shapes"
-title = "Task 1: shapes"
+key = "sort"
+title = "Game 1: sort by colour"
 scored = true
 time_limit_s = 300
-par_time_s = 90
-par_path_m = 3.5
-text = "Put each shape into its outline on the board. Turn the gripper with Q and E so the shapes match their outlines."
-objects = ["big_square", "small_square", "bar"]
-markers = ["slot_big_square", "slot_small_square", "slot_bar"]
-steps = [
-  { type = "place_in_slot", object = "big_square", slot = "slot_big_square", label = "big square" },
-  { type = "place_in_slot", object = "small_square", slot = "slot_small_square", label = "small square" },
-  { type = "place_in_slot", object = "bar", slot = "slot_bar", label = "bar" },
-]
-
-[[phases]]
-key = "sort"
-title = "Task 2: sort by colour"
-scored = true
-time_limit_s = 240
 par_time_s = 80
-par_path_m = 3.5
+par_path_m = 3.0
 text = "Put each object into the bin of its colour."
 objects = ["red_ball", "blue_cube", "green_cylinder"]
 markers = ["bin_red", "bin_blue", "bin_green"]
@@ -588,35 +575,17 @@ steps = [
 ]
 
 [[phases]]
-key = "rings"
-title = "Ring on pegs"
+key = "tower"
+title = "Game 2: tower"
 scored = true
 time_limit_s = 300
-par_path_m = 9.0               # (for the 9 rings of the target rounds; speed here = how many were hung)
-weight = 1.5                   # six degrees of freedom: counts more
-rotation = "full"
-repeat = true                  # all three on their pegs: a new round (the rings back in their holders) until time is up
-target_rounds = 3              # 3 rounds (9 rings) score full marks
-text = "Hang each ring on the peg of its colour. The pegs lean at different angles: tilt the ring with W S A D so the peg goes through the hole, then pinch to let go. When all three are on, they come back for the next round: as many rounds as you can."
-objects = ["ring_red", "ring_blue", "ring_green"]
-markers = ["ring_holder_red", "ring_holder_blue", "ring_holder_green", "peg_red", "peg_blue", "peg_green"]
-steps = [
-  { type = "hang_on", object = "ring_red", peg = "peg_red", label = "red ring" },
-  { type = "hang_on", object = "ring_blue", peg = "peg_blue", label = "blue ring" },
-  { type = "hang_on", object = "ring_green", peg = "peg_green", label = "green ring" },
-]
-
-[[phases]]
-key = "tower"
-title = "Tower"
-scored = true
-time_limit_s = 240
-par_path_m = 10.0              # (for a tower of the target height; speed here = how high it got)
+par_time_s = 75
+par_path_m = 3.6
 rotation = "yaw"
-text = "Take each block from the yellow square and stack them on the wooden platform. Build as high as you can: lower each block gently onto the one below, then pinch to let go. A new block appears when you take one."
+text = "Stack 3 blocks on the wooden platform. Take them from the yellow square, one at a time. Dropped one? Pick it up again."
 objects = ["tower_block"]
 markers = ["tower_supply", "tower_platform"]
-steps = [{ type = "stack", objects = "tower_block", platform = "tower_platform", supply = "tower_supply", target_height = 0.25 }]
+steps = [{ type = "stack", objects = "tower_block", platform = "tower_platform", supply = "tower_supply", target_height = 0.14 }]
 
 [[phases]]
 key = "done"

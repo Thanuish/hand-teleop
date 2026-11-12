@@ -60,7 +60,7 @@ jobs:
           echo "== the candidate page"
           curl -fs localhost:8000/ | grep -q "bare hand"
           echo "== a candidate joins: a simulator starts in the container"
-          loc=$(curl -s -D - -o /dev/null -X POST -d "name=CI&email=ci@example.com&consent=on" localhost:8000/join \
+          loc=$(curl -s -D - -o /dev/null -X POST -d "name=CI&email=ci@example.com&camera=on&consent=on" localhost:8000/join \
                 | grep -i '^location:' | tr -d '\r' | awk '{print $2}')
           echo "redirected to $loc"; case "$loc" in /play/*) ;; *) docker logs teleop; exit 1;; esac
           code=${loc#/play/}

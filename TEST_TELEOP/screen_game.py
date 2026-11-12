@@ -191,7 +191,9 @@ class ScreenGame:
             for n in st.objects:                            # (they appear one at a time)
                 SS.place(info, d, n, "park")
             self.stack = dict(step=st, queue=list(st.objects), out=[], on_tower=set(), still_since=None,
-                              plat=self.cfg.markers[st.marker], supply=self.cfg.markers[st.supply])
+                              plat=self.cfg.markers[st.marker], supply=self.cfg.markers[st.supply],
+                              block=2 * SS._half_height(self.cfg.objects[st.objects[0]], [1, 0, 0, 0]),
+                              goal=len(st.objects))
             self._next_block()
         self.wire = None
         wire_steps = [st for st in ph.steps if st.type == "follow_wire"]
@@ -347,7 +349,8 @@ class ScreenGame:
 
     def _stack_tick(self, mt):
         """20 times a second: refill the supply, the tower's height (the best one that stood still
-        for 1 s counts), falls; done when every block is used and all is still."""
+        for 1 s counts), falls; done when it stood still at the target height (a fallen block can
+        be picked up again: running out of blocks doesn't end it, the time limit does)."""
         tw, tol = self.stack, self.cfg.tol
         plat, sup = tw["plat"], tw["supply"]
         top = S.TABLE_Z + 2 * plat.p["half"][2]
@@ -382,8 +385,7 @@ class ScreenGame:
             if np.hypot(p[0] - sup.pos[0], p[1] - sup.pos[1]) > 0.08 and not self.held.get(last, False):
                 self._next_block()
                 self.held.setdefault(tw["out"][-1], False)
-        done = (not tw["queue"] and tw["still_since"] is not None and now - tw["still_since"] >= 2.0
-                and last is not None and np.hypot(*(self._obj(last)[0][:2] - np.asarray(sup.pos))) > 0.08)
+        done = mt["best_height"] >= tw["step"].target_height
         self.done[tw["step"].id] = bool(done)
         return done
 
@@ -463,8 +465,15 @@ class ScreenGame:
         tel = self.sim.arms.teleop[self.side]
         mt["tracking_glitches"] = tel.glitches - self._glitch0       # (tracking jumps the arm ignored)
         # a camera-tracked hand is smoothed on its device already: less smoothing here (less lag)
-        by_hand = (self.sim.latest_input or {}).get("tracker") == "hand"
-        self.sim.arms.smoothing = (self.cfg.hand_smoothing if by_hand else self.cfg.smoothing) or None
+        inp = self.sim.latest_input or {}
+        by_hand = inp.get("tracker") == "hand"
+        smooth = self.cfg.hand_smoothing if by_hand else self.cfg.smoothing
+        # (a camera giving fewer frames, often 15 a second in a dim room: the glide stretched to their
+        # spacing, else the robot steps and stops at each frame)
+        fps = inp.get("fps") if by_hand else None
+        if smooth and isinstance(fps, (int, float)) and fps > 0:
+            smooth = max(smooth, min(0.07, 0.7 / fps))
+        self.sim.arms.smoothing = smooth or None
         scale = self.cfg.hand_motion_scale if by_hand else self.cfg.motion_scale
         rscale = self.cfg.hand_rotation_scale if by_hand else 1.0
         if tel.pos_scale != scale or tel.rot_scale != rscale:   # (slower for a hand: more precise; re-anchor)
@@ -756,7 +765,8 @@ class ScreenGame:
                     round=(mt.get("rounds", 0) + 1) if p.repeat and p.kind == "task" else None,
                     tower=(dict(height=mt.get("height", 0.0), best=mt.get("best_height", 0.0),
                                 target=mt.get("target_height"), falls=mt.get("falls", 0),
-                                left=len(self.stack["queue"]))
+                                left=len(self.stack["queue"]), goal=self.stack["goal"],
+                                blocks=int(round(mt.get("height", 0.0) / self.stack["block"])))
                            if self.stack is not None and p.kind == "task" else None),
                     wire=(dict(progress=mt.get("progress", 0.0), touches=mt.get("touches", 0),
                                touching=self.wire["touching"], off=self.wire["off"])

@@ -17,8 +17,13 @@ For the people who run rounds of the test and read the results. (How the system 
    - a pinch (close the gripper), then a pinch again (open it);
    - Q and E.
 3. **The practice** (not scored): pick up a cube and put it in a square.
-4. **The scored tasks:** shapes, sort by colour, rings on pegs, tower. Each starts with a card
-   (what to do, which controls, the time limit) for 7 s, then a 3-second countdown.
+4. **The two games** (5 minutes each): sort by colour, then a tower of 3 blocks. Each starts with
+   a card (what to do, which controls, the time limit) that the candidate reads before pressing
+   Start, then a 3-second countdown.
+
+Before the test, the candidate confirms a camera notice: the camera only tracks the hand during
+the tasks, and no video is recorded or stored (the tracking runs in their browser; only the hand's
+points are sent).
 5. **Done:** a thank-you page. The results are saved straight away.
 
 The candidate never sees scores. Candidates who are stuck go to `/help` (linked from every page).
@@ -36,7 +41,7 @@ for @sereact.ai accounts.
 | Overall | the weighted mean of the tasks |
 | Grade | A ≥ 85, B ≥ 70, C ≥ 55, D ≥ 40, F below |
 | Skills C · S · P · E | completion, speed, precision, economy of motion, 0–100 over all tasks |
-| Result | PASS / FAIL against the pass mark (set at the top of the page) |
+| Result | PASS = both games completed (the games that must be completed and a minimum score are set on the admin page). The recommendation follows it: passed = invite |
 
 **Download CSV** gives the same table for a spreadsheet.
 
@@ -59,6 +64,12 @@ The grade tells you *how good*; the profile tells you *why*:
 
 `/t/<token>` starts a fresh run each time without an email (the token is in
 `data/screening/test_link.json`). Use it to try changes; those rows show as batch "Test runs".
+
+**Demo data:** to see the page full (or to try a scoring change) without real candidates,
+`python scripts/demo_admin.py` makes 40 invented candidates in `data/demo` (simulated from a
+random skill, learning and tracking quality, scored by the real grading). Then
+`python -m TEST_TELEOP.lobby serve --data data/demo --port 8101` and open
+`http://localhost:8101/admin`. The real data is not touched.
 
 ## Tuning the scoring
 

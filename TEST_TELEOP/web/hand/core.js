@@ -72,14 +72,21 @@ export const SETTINGS = {
   // (30 deg; the real points don't fit its hand model well enough), and the wrong focal length made
   // the robot shakier. hfov above is used instead
   focalFromHand: false,
-  pinchOn: 0.32, pinchOff: 0.5, // thumb-index tips / palm length: closed below, open above (hysteresis: no flicker)
+  // thumb-index tips / palm length: closed below pinchOn, open above pinchOff (hysteresis: no
+  // flicker). On real sessions many pinches stopped at 0.32-0.38 (MediaPipe's tips don't quite
+  // meet) and were missed: of the hand's dips below 0.36, three in four were followed by a
+  // recognised pinch within 2 s (the person trying again); above 0.40 they were mostly noise
+  pinchOn: 0.38, pinchOff: 0.5,
   pinchFrames: 3,              // gripMode 'pinchToggle': a pinch counts once seen this many frames in a row
   // One Euro filter (adaptive: steady when the hand is still, little lag when it moves)
-  pos: { minCutoff: 0.45, beta: 5, dCutoff: 1.0 },    // position [m]
-  // distance from the camera (the noisiest) [m]. beta 1.5 and a calm speed estimate (dCutoff
-  // 0.5): with beta 4 the depth noise itself opened the filter up (replayed real sessions,
-  // scripts/replay_hand.mjs: the robot's roughness while moving -31 %, a still hand's wander -80 %)
-  depth: { minCutoff: 0.15, beta: 1.5, dCutoff: 0.5 },
+  // (2026-11: both opened up, with depthMedian 5 -> 3: on a real 15 fps session the robot lagged
+  // the hand by 0.33 s and felt sluggish; now 0.22 s, over all recordings 0.17 -> 0.14 s, a still
+  // hand's wander 3.3 -> 2.4 mm, roughness while moving +3 %. The dead band holds a still hand; opened a little more once the
+  // grasp roll-back was gone, see grasp below: the lag over all recordings 0.14 -> 0.135 s)
+  pos: { minCutoff: 1.5, beta: 10, dCutoff: 1.0 },    // position [m]
+  // distance from the camera (the noisiest) [m]. A calm speed estimate (dCutoff 0.5): with a fast
+  // one the depth noise itself opened the filter up
+  depth: { minCutoff: 0.6, beta: 4, dCutoff: 0.5 },
   rot: { minCutoff: 0.5, beta: 0.4, dCutoff: 1.0 },    // orientation (per rad/s)
   refDepth: { minCutoff: 0.15, beta: 0.5, dCutoff: 1.0 },   // the reference distance that scales left/right and up/down
   // a dead band ("backlash") after the filters: while the hand stays within this of where the
@@ -101,11 +108,24 @@ export const SETTINGS = {
   // settling again (on a real session the hand was lost on a third of the frames, mostly briefly)
   holdLost: 0.3,               // [s]
   // [s] the position output this far ahead along the hand's speed (makes up for the filters' lag).
-  // Off: on real sessions it amplified the tracking noise (a third of the roughness while moving);
-  // the ghost gripper shows where the robot is going without delay instead
+  // Off: on real sessions it amplified the tracking noise (a third of the roughness while moving)
   lead: 0,
-  depthMedian: 5,              // [frames] the distance: the median of this many (a wrong frame or two ignored)
+  depthMedian: 3,              // [frames] the distance: the median of this many (a wrong frame or two ignored)
   depthSpeed: 0.8,             // [m/s] ... and changing at most this fast (a hand toward / away from the camera)
+  // the distance: this share from the hand's size in the picture (handPose), the rest from the 3D
+  // palm solution. Far from the camera (a small hand) the palm solution trades distance for tilt,
+  // and on a real session moving the hand sideways moved the robot forward / back nearly as much;
+  // the size alone erred elsewhere. Their mean: the errors partly cancel (replayed, the forward
+  // motion that came with sideways motion far away: 100 % of it -> 60 %) ...
+  depthMix: 0.5,
+  // ... and far from the camera, a change of distance that comes with a larger sideways motion is
+  // mostly let go (it is that error, not the hand): the share kept is vz^2 / (vz^2 + (ratio x
+  // sideways speed)^2), from none of this at the reference distance `near` [m] to all of it at
+  // `far` (both together: 100 % -> 24 %; at a normal distance, 0.4-0.6 m, nothing changes)
+  farGate: { near: 0.7, far: 1.1, ratio: 2.5, smooth: 0.25 },
+  // the distance's motion is scaled by this before it goes out (forward / back on the robot): the
+  // distance is the noisiest number, and the tasks need less reach forward than sideways
+  depthGain: 0.75,
   leadSmooth: 0.4,             // (the speed for it: a running mean, this share of each new frame)
   // frames are scaled to this long side for the tracker. The tracker looks at the hand in a
   // 224 x 224 crop of the frame: a hand ~150 px tall in a 640 px frame is blown up (blurry
@@ -120,7 +140,11 @@ export const SETTINGS = {
   // grasp stabilization holds the pose while the hand's shape changes (pose3d.js GraspStabilizer;
   // the threshold from synthetic tests: a still hand stays below 3.0, a 0.3 s pinch peaks above 4.7;
   // on a real session: an open hand p99 3.2, closing into a fist up to 3.8, pinches 2.5-5.5)
-  grasp: { threshold: 3.4, window: 8, still: 10, smooth: 0.35 },
+  // rollback: on tripping it went back to the pose from before the change (8 frames). Off
+  // (2026-11): mid-motion that threw the robot back a few cm and it caught up again, the
+  // jerkiness candidates felt; now it holds where it is (replayed: roughness while moving -27 %
+  // over all recordings, -42 % on the newest; a still hand unchanged)
+  grasp: { threshold: 3.4, window: 8, still: 10, smooth: 0.35, rollback: false },
   // the wrist's position: 'palm' (the palm solution) or 'oat' (all 21 joints, OAT eq. 2). 'palm':
   // replayed on a real session, 'oat' was a little shakier (1.9 vs 1.7 mm median; synthetic tests
   // had it on par)
@@ -577,6 +601,7 @@ export class HandControl {
         state.gesture = this.fist ? 'fist' : this.pinchHeld ? 'pinch' : 'open';
       } else state.gesture = this.fist ? 'fist' : this.pinched ? 'pinch' : 'open';
       state.gripping = this.pinched;
+      state.pinch = hp.pinch;                          // (for the pinch circle on the camera picture)
       // learn the palm (open hand only: a fist or a pinch bends it; and only while the hand's shape
       // is calm: frames halfway through opening it, the palm still arched, distorted the model)
       if (sol && state.gesture === 'open' && !this.stab.frozen && this.stab.psi < SETTINGS.grasp.threshold / 2) {
@@ -624,7 +649,7 @@ export class HandControl {
       if (back && this.openFrames > 1) {               // (the filters start afresh where the hand is now, the
         for (const fl of [this.fPos, this.fDepth, this.fRef, this.fTwist]) fl.reset();
         this.prevCam = this.vCam = null;
-        this.dHist = []; this.dRobust = null;   //  clutch anchors there)
+        this.dHist = []; this.dRobust = null; this.gate = null;   //  clutch anchors there)
         this.bPos.reset();
         this.fRot3.reset(); this.bRot3.reset();
         this.stab.reset();
@@ -636,7 +661,7 @@ export class HandControl {
       if (this.openFrames === 1) {                     // (the hand just opened: the filters start afresh ...
         for (const fl of [this.fPos, this.fDepth, this.fRef, this.fTwist]) fl.reset();
         this.prevCam = this.vCam = null;
-        this.dHist = []; this.dRobust = null;
+        this.dHist = []; this.dRobust = null; this.gate = null;
         this.bPos.reset();
         this.fRot3.reset(); this.bRot3.reset();
         this.twist = null;
@@ -655,7 +680,11 @@ export class HandControl {
       // move the gripper), the twist (the angle of the wrist -> middle knuckle line in the image, 0
       // = fingers up; in the image the person's clockwise turn goes the other way, so this angle is
       // already the robot's turn), the hand's rotation (the forearm fused in when Pose found it)
-      const pt = ow ? ow.wrist : sol ? sol.wrist : hp.pos;
+      let pt = ow ? ow.wrist : sol ? sol.wrist : hp.pos;
+      if (SETTINGS.depthMix > 0 && pt[2] > 0) {        // (the distance mixed: see SETTINGS.depthMix)
+        const z = pt[2] + SETTINGS.depthMix * (hp.D - pt[2]);
+        pt = pt.map(x => x * z / pt[2]);
+      }
       const ang = Math.atan2((m.lm[9].x - m.lm[0].x) * W, -(m.lm[9].y - m.lm[0].y) * H);
       if (this.twistRaw === null) this.twistRaw = ang;
       this.twistRaw += Math.atan2(Math.sin(ang - this.twistRaw), Math.cos(ang - this.twistRaw));   // (unwrapped)
@@ -667,7 +696,7 @@ export class HandControl {
       // and the change goes into a bias; then it goes on from there, without a jump
       const sb = this.stab.update(fingerShape(m.wl), [...pt, this.twistRaw], RhRaw || IDENTITY, t);
       state.steadied = sb.frozen;
-      if (sb.frozen && !this.wasSteadied && this.outHist.length) {
+      if (sb.frozen && !this.wasSteadied && this.outHist.length && SETTINGS.grasp.rollback !== false) {
         // it just tripped: the filters and dead bands go back to their state from before the hand
         // began to change (they would keep the drift that leaked out before the change was seen),
         // and the pose held is exactly that state (held at the filters' own value, nothing moves;
@@ -690,10 +719,24 @@ export class HandControl {
       const dMed = [...this.dHist].sort((a, b) => a - b)[this.dHist.length >> 1];
       const dMax = SETTINGS.depthSpeed * (dt || 1 / 30);
       this.dRobust = this.dRobust == null ? dMed : this.dRobust + Math.max(-dMax, Math.min(dMax, dMed - this.dRobust));
-      const D = this.fDepth.filter([this.dRobust], t)[0];
+      const Df = this.fDepth.filter([this.dRobust], t)[0];
       const Dref = this.fRef.filter([this.dRobust], t)[0];
       // (the distance filtered once, by its own filter: through the position filter too it lagged twice)
-      const camPos = [...this.fPos.filter([ps[0] / ps[2] * Dref, ps[1] / ps[2] * Dref], t), D];
+      const xy = this.fPos.filter([ps[0] / ps[2] * Dref, ps[1] / ps[2] * Dref], t);
+      // far away: the distance's change that comes with a larger sideways motion mostly let go
+      // (SETTINGS.farGate; the speeds a running mean: per frame the noise would decide it). The
+      // robot only follows changes (the clutch), so the offset this leaves is harmless
+      const g = SETTINGS.farGate, k = Math.min(1, Math.max(0, (Dref - g.near) / (g.far - g.near)));
+      let D = Df, vz = 0, vs = 0;
+      if (this.gate) {
+        const dz = Df - this.gate.Df, ds = Math.hypot(xy[0] - this.gate.xy[0], xy[1] - this.gate.xy[1]);
+        vz = this.gate.vz + g.smooth * (Math.abs(dz) - this.gate.vz);
+        vs = this.gate.vs + g.smooth * (ds - this.gate.vs);
+        const s = k * g.ratio * vs;
+        D = this.gate.D + dz * (vz * vz / (vz * vz + s * s + 1e-12));
+      }
+      this.gate = { Df, D, xy, vz, vs };
+      const camPos = [...xy, D * SETTINGS.depthGain];   // (the robot follows changes: scaling D is safe)
       // a little ahead (SETTINGS.lead): the filters' delay partly made up from the hand's speed
       // (smoothed; zero at rest, where the dead band below holds it still anyway)
       if (dt > 0 && this.prevCam) {
@@ -778,7 +821,8 @@ export class HandControl {
     if (!this.armed) return;
     const side = st.task_game?.arm || 'right';
     const right = pose ? { pose, grip: state.driving ? 1 : 0, stick: [0, this.pinched ? 1 : -1], buttons: [], epoch: this.epoch } : null;
-    this.opts.send({ type: 'input', t, head: null, left: null, right: null, [side]: right, tracker: 'hand' });
+    // (fps: the server glides between frames over a time that fits their spacing)
+    this.opts.send({ type: 'input', t, head: null, left: null, right: null, [side]: right, tracker: 'hand', fps: state.fps });
   }
 
   /** the turn and tilt keys, added up by the clock (not per tracker frame: at 10-30 frames a
@@ -808,7 +852,7 @@ export class HandControl {
       const pose = [...this.lastPose.slice(0, 3), ...steadyQuat(c.rotation, c.vy, this.keyYaw, this.pitch, this.roll)];
       this.lastPose = pose;
       const right = { pose, grip: 1, stick: [0, this.pinched ? 1 : -1], buttons: [], epoch: this.epoch };
-      this.opts.send({ type: 'input', t, head: null, left: null, right: null, [c.side]: right, tracker: 'hand' });
+      this.opts.send({ type: 'input', t, head: null, left: null, right: null, [c.side]: right, tracker: 'hand', fps: s.fps });
     }
   }
 }

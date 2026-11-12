@@ -465,6 +465,8 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  button:hover {{ filter:brightness(1.08); }}
  .err {{ color:var(--sr-bad); }} label {{ color:#cbd3e6; font-size:14px; font-weight:500; }} small {{ color:var(--sr-faint); }}
  .foot {{ margin-top:18px; font-size:12px; color:var(--sr-faint); }}
+ .notice {{ border:1px solid var(--sr-line); background:rgba(47,107,255,.10); border-radius:14px; padding:14px 18px; margin:6px 0 4px; }}
+ .notice p {{ margin:8px 0 0; font-size:14px; }} .notice .small {{ font-size:13px; color:var(--sr-faint); }}
 </style></head><body><div class="card">
 <span class="sr-brand"><span class="sr-logo" aria-hidden="true"></span><span class="sr-mark">sere<b>act</b></span><span class="sr-divider"></span><span class="sr-product">Teleoperation assessment</span></span>
 {body}</div><div class="foot">© Sereact GmbH</div></body></html>"""
@@ -477,7 +479,7 @@ def page(title, body, status=200):
 
 JOIN_FORM = """<h1>Robot teleoperation test</h1>
 <p>You will control a robot gripper in a simulation with your <b>bare hand</b> in front of your
-webcam, and do a few short manipulation tasks after a practice round. It takes about 20 minutes.</p>
+webcam, and play two short games after a practice round. It takes about 15-20 minutes.</p>
 <p><b>You need:</b> a computer with a webcam, Chrome or Edge, good light on your hand. A short setup
 checks everything before you start. <a href="/help" target="_blank" rel="noopener">Help: what you need, camera, controls</a></p>
 <p>You can take the test once. Use the email address you applied with.</p>
@@ -485,18 +487,22 @@ checks everything before you start. <a href="/help" target="_blank" rel="noopene
 <form method="post" action="/join">
  <label>Your name</label><input type="text" name="name" value="{name}" autocomplete="name" maxlength="80" required>
  <label>Your email</label><input type="email" name="email" value="{email}" autocomplete="email" maxlength="254" required>
+ <div class="notice"><b>📷 Your camera</b>
+  <p>The test uses your webcam <b>only to track your hand</b> while you do the tasks. The video is processed in
+ your browser and is <b>not recorded or stored</b>: only your hand's position (21 points) is sent, to move the robot.</p></div>
+ <p><label><input type="checkbox" name="camera" required> I understand that the test uses my camera only to track my
+ hand during the tasks, and that no video of me is recorded or stored.</label></p>
  <p><label><input type="checkbox" name="consent" required> I agree that my control of the robot
  is recorded and scored for this application. The recording is used only to evaluate the test.</label></p>
  <button type="submit">Start</button>
 </form>"""
 
 ALREADY_TAKEN = """<h1>You've already taken the test</h1>
-<p>There is already an attempt for this email address, and each person can take the test once.</p>
-<p>If something went wrong (for example the connection dropped), contact the person who sent you
-this link: they can allow a retake.</p>"""
+<p>There is already an attempt for this email.</p>
+<p>Something went wrong? Contact the person who sent you the link: they can allow a retake.</p>"""
 
 CLOSED = """<h1>Back in a few minutes</h1>
-<p>The test is closed for a short update. Please try again in a few minutes: your invitation is still valid.</p>"""
+<p>Short update in progress. Please try again in a few minutes.</p>"""
 
 ATTEMPT_COOKIE = "screening_attempt"
 EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
@@ -658,6 +664,8 @@ def make_app(args) -> web.Application:
             return again("Please enter your name.")
         if len(email) > 254 or not EMAIL_RE.fullmatch(email):
             return again("Please enter a valid email address.")
+        if not form.get("camera"):
+            return again("Please confirm the camera notice to take the test.")
         if not form.get("consent"):
             return again("Please agree to the recording to take the test.")
         prev = attempt_of(email)
@@ -811,7 +819,8 @@ def make_app(args) -> web.Application:
         if hit and hit[0] == key:
             return hit[1]
         c = cfg()
-        r = R.recommend(res, R.quality(folder / "hand_tracking.jsonl"), c.scored_phases, c.recommendation)
+        r = R.recommend(res, R.quality(folder / "hand_tracking.jsonl"), c.scored_phases, c.recommendation,
+                        passed=passed(res) if c.scoring["must_complete"] else None)
         rec_cache[code] = (key, r)
         return r
 

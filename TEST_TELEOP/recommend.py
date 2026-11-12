@@ -5,22 +5,25 @@ Inputs: the attempt's results.json (scores and metrics, screen_game.py) and the 
 hand tracking (quality(): from hand_tracking.jsonl, the browser's raw tracking log).
 
     skill        the overall score (grading.py), 0-100
-    learning     does the candidate get better during the test? Per task with at least
-                 MIN_GRASPS grasps (not the tower: it gets harder block by block): the time
-                 between successful grasps (and, where logged, the
-                 grab attempts per grasp) in its second half against its first half; the tasks'
-                 improvements averaged, weighted by their grasps. 0-100: 50 = no change,
+    learning     does the candidate get better during the test? The time between successful
+                 grasps, per task with at least MIN_GRASPS such gaps (not the tower: it gets
+                 harder block by block), its later gaps against its earlier ones; and the grab
+                 attempts per grasp over the whole test (both games, the tower too: aiming
+                 doesn't get harder), the second half of the grasps against the first.
+                 Weighted 60 / 40. 0-100: 50 = no change,
                  100 = 40 % faster or better, 0 = 40 % slower. None: not enough grasps to tell
     consistency  how far apart the task scores are (the spread, max - min)
     technical    the tracking: pictures per second, latency, how much of the time the hand
                  was lost, server tracking used, setup time
 
-Verdict (the thresholds: [recommendation] in config/screening.toml, defaults below):
+Verdict (the thresholds: [recommendation] in config/screening.toml, defaults below). With a
+pass rule (passed: True / False, lobby.passed(): every must_complete game completed), it decides
+the invitation: passed -> invite; not passed -> at most trainable, from the rules below.
     retest      technical trouble (too few pictures a second, the hand lost too often, too
-                much latency) and the skill below the invite mark: judge the person, not the
-                webcam (an admin can allow a retake)
-    invite      skill >= invite_skill, or skill >= invite_skill_learner with learning >=
-                invite_learning (a strong learner)
+                much latency) and not passed (or the skill below the invite mark): judge the
+                person, not the webcam (an admin can allow a retake)
+    invite      passed; without a pass rule: skill >= invite_skill, or skill >=
+                invite_skill_learner with learning >= invite_learning (a strong learner)
     trainable   skill >= trainable_skill with learning >= trainable_learning, or skill >=
                 consider_skill (solid, not (yet) improving), or skill >= trainable_skill_learner
                 with learning >= trainable_learning_strong (low, but learning fast)
@@ -34,7 +37,7 @@ import json
 import statistics as st
 from pathlib import Path
 
-MIN_GRASPS = 3
+MIN_GRASPS = 2                   # (a game has 3 objects: 2 gaps between grasps)
 QUALITY_VERSION = 2              # (bump when quality() measures differently: its caches are made again)
 
 DEFAULTS = dict(invite_skill=70.0, invite_skill_learner=55.0, invite_learning=65.0,
@@ -76,7 +79,7 @@ def curve(metrics: dict, task_keys: list[str], titles: dict) -> list[dict]:
 def learning(points: list[dict], skip: set = frozenset()) -> dict:
     """The learning measure from curve(): per task, the second half against the first. skip:
     tasks that get harder as they go (the tower: each block higher up needs more care), where
-    slowing down isn't a sign of anything."""
+    slowing down isn't a sign of anything (left out of the time part only)."""
     tasks = {}
     for p in points:
         if p["task"] not in skip:
@@ -98,7 +101,7 @@ def learning(points: list[dict], skip: set = frozenset()) -> dict:
     time_imp = isum / wsum if wsum else None
     # tries: grab attempts per successful grasp, the test's first half of grasps against its second
     # (where logged); fewer tries later = better aim
-    tried = [p["attempts"] for p in points if p["task"] not in skip and p["attempts"]]
+    tried = [p["attempts"] for p in points if p["attempts"]]
     tries_imp = None
     if len(tried) >= 2 * MIN_GRASPS:
         h = len(tried) // 2
@@ -181,8 +184,10 @@ def technical(q: dict | None, th: dict) -> list[str]:
 
 
 # ---------------------------------------------------------------- the verdict
-def recommend(res: dict | None, q: dict | None, scored: list, th: dict | None = None) -> dict:
-    """res: results.json; q: quality(); scored: the config's scored phases (key, title).
+def recommend(res: dict | None, q: dict | None, scored: list, th: dict | None = None,
+              passed: bool | None = None) -> dict:
+    """res: results.json; q: quality(); scored: the config's scored phases (key, title);
+    passed: the pass rule's answer (None: no pass rule, the score decides).
     {verdict, label, reasons: [...], skill, learning: {...}, consistency, technical: [...],
      curve: [...], skipped: [...]}."""
     th = {**DEFAULTS, **(th or {})}
@@ -239,12 +244,18 @@ def recommend(res: dict | None, q: dict | None, scored: list, th: dict | None = 
     if out["skipped"]:
         why.append("Skipped: " + ", ".join(out["skipped"]) + " (what was done there still counts).")
     # the verdict
-    if out["technical"] and s < th["invite_skill"]:
+    if passed is not None:
+        failed = [titles[k] for k in keys if not m.get(k, {}).get("completed")]
+        why.insert(0, "Completed every game." if passed else
+                   "Did not complete: " + ", ".join(failed) + "." if failed else "Below the pass mark.")
+    if passed:
+        v = "invite"
+    elif out["technical"] and (passed is False or s < th["invite_skill"]):
         v = "retest"
         why.insert(0, "The tracking was poor: " + "; ".join(out["technical"]) + ". The score may not show their ability.")
-    elif s >= th["invite_skill"]:
+    elif passed is None and s >= th["invite_skill"]:
         v = "invite"
-    elif s >= th["invite_skill_learner"] and L is not None and L >= th["invite_learning"]:
+    elif passed is None and s >= th["invite_skill_learner"] and L is not None and L >= th["invite_learning"]:
         v = "invite"
         why.insert(0, "A strong learner with a good score: worth an interview.")
     elif (s >= th["trainable_skill"] and L is not None and L >= th["trainable_learning"]) or s >= th["consider_skill"]:

@@ -14,22 +14,25 @@ install. Up to about 15 people at a time, run from your laptop.
  └────────────────────┘           └──────────────────────────┘           └───────────────────┘
 ```
 
-**What the candidate does** (about 20 minutes):
+**What the candidate does** (about 15–20 minutes):
 
 | Phase | What | Time limit | Scored |
 |---|---|---|---|
-| Connect | scan the QR code on the screen with the phone, tap START CONTROLLER | | |
-| Practice 1 | touch three glowing targets with the gripper | 2:30 | no (but reach efficiency is shown to you) |
-| Practice 2 | put a yellow cube into a green square | 2:30 | no |
-| Task 1: shapes | put a big square, a small square and a bar into their outlines (the bar must be turned 90°) | 4:00 | yes |
-| Task 2: sorting | red ball, blue cube, green cylinder into the bin of their colour | 3:00 | yes |
-| Ring on pegs | three rings stand in holders; hang each on the peg straight ahead of it, of its colour. The pegs lean at different angles (almost level, 60°, 45°), so each ring needs a different tilt. **In rounds:** when all three are on, they come back for the next round, until the time is up | 5:00 | yes |
-| Tower | blocks appear one at a time on a yellow square; stack them on a wooden platform as high as possible (6 blocks, 5 cm each) | 4:00 | yes |
+| Setup | camera, light, hand in the box, the gestures, repositioning the hand | | |
+| Practice | put a yellow cube into a green square | 3:00 | no |
+| Game 1: sorting | red ball, blue cube, green cylinder into the bin of their colour | 5:00 | yes |
+| Game 2: tower | stack 3 blocks (5 cm each) on a wooden platform; they appear one at a time on a yellow square; a fallen block can be picked up again | 5:00 | yes |
 
-Practice and tasks 1–2 use the phone's position and its turn left / right; the gripper keeps
-pointing down. **Ring on pegs uses all six degrees of freedom**: the gripper also tilts (W S A D
-with the hand control), so each ring can be angled onto its peg. Which phases use full rotation is the `rotation` setting of each phase in
-`config/screening.toml`.
+**Pass = both games completed** (`must_complete` in `[scoring]`); those are the ones to invite,
+and the score ranks them. The gripper keeps pointing down and turns left / right (Q / E); no game
+needs tilting. (Other tasks, such as shapes, rings on pegs or the buzz wire, can be added back as
+phases in `config/screening.toml`.)
+
+**Camera and privacy:** before starting, the candidate confirms a notice that the camera is used
+only to track the hand during the tasks and that no video is recorded or stored. The hand
+tracking runs in the browser; only the hand's 21 points are sent (and kept, for scoring). Only
+with "Track on our server" (offered for slow computers) are the pictures sent to the server,
+processed in memory and never stored.
 
 **Physics:** the same as the VR blocks task: rigid MuJoCo bodies, light blocks (80 g), the UR5e's
 own joint motors (`servo_stiffness` in the configuration). The book weighs 200 g; the mug and
@@ -76,12 +79,12 @@ Android phones from the last few years). iPhones can't do this in a browser.
 | Precision | 20 | grabs that lifted something ÷ grab attempts, less a third per drop, a quarter per wrong bin, a third per tower fall |
 | Economy | 10 | how directly the robot moved: the task's par path (`par_path_m`) × completion ÷ the path moved |
 
-**Overall** = the tasks' scores averaged by their `weight` (rings count 1.5×: all six degrees of
-freedom). Then a **grade** (A ≥ 85, B ≥ 70, C ≥ 55, D ≥ 40, else F) and a
+**Overall** = the tasks' scores averaged by their `weight`. Then a **grade** (A ≥ 85, B ≥ 70, C ≥ 55, D ≥ 40, else F) and a
 **skill profile**: the four parts over all tasks, 0–100, so you see *why* (e.g. completes
 everything but slowly). The admin page shows the grade and profile; hover a task's score for its
-parts. **Pass** = overall ≥ the pass mark (default 50, set on the admin page or in the
-configuration), and any `must_complete` phases completed. Times are in simulation time, so a slow
+parts. **Pass** = every `must_complete` phase completed (both games) and overall ≥ the pass
+mark (0 by default: completing both is what counts; both set on the admin page or in the
+configuration). Times are in simulation time, so a slow
 connection doesn't cost points. The weights, pars and grade bands are in the configuration
 (`[scoring]` and each phase). Changing them changes how results compare with earlier candidates
 (each result records which configuration it ran with).

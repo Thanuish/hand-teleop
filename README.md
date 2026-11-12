@@ -18,18 +18,15 @@ tasks from home and gets scored on time, steps and efficiency.
 
 | | |
 |---|---|
-| ✋ open hand | moves the robot (it follows your hand, at 0.35 scale: calmer, more precise) |
+| ✋ open hand | moves the robot (it follows your hand, at 0.9 scale: small hand movements, sitting close to the webcam) |
 | ✊ fist | pause: move your hand without moving the robot, open it to carry on |
 | 🤏 pinch | close the gripper; open your hand and it drives with the gripper closed; pinch again to open it (the robot holds still while you pinch) |
 | **SPACE** | close the gripper / open it again (same as a pinch) |
 | **Q / E** | turn the gripper |
-| **W / S, A / D** | tilt it (tasks that need it) |
 | **H** | the gripper back home |
 
-A see-through **ghost gripper** shows at once where the robot is going (drawn from your hand in
-your browser), so the network's delay doesn't make it feel laggy. The hand must stay inside the
-**box** drawn on the camera picture: outside it, the robot pauses (near the picture's edge the
-tracking loses fingers).
+The hand must stay inside the **box** drawn on the camera picture: outside it, the robot pauses
+(near the picture's edge the tracking loses fingers).
 
 ## Run it
 
